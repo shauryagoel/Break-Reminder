@@ -183,4 +183,5 @@ run = 'layout floating'
 ## Checkpoint: Window module complete
 
 - [ ] All local success criteria in `SPEC-reminder-window.md` pass on macOS; X11 build and runtime statuses are explicit.
-- [ ] Code review, user review, and the full app walkthrough are complete.
+- [x] Code review and user review of the packaged Mac build are complete; the user approved its behavior after menu, overlay, fallback, and one-minute parent-flow checks.
+- [ ] Finish the full app walkthrough when sleep/wake, external-monitor, workspace-switch, and shorter-display checks are available.
