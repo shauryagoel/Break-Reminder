@@ -6,14 +6,14 @@
 
 **Acceptance criteria:**
 
-- [ ] Startup is due after one configured interval; before the deadline it does nothing, and a late wake starts only one launch.
-- [ ] Display countdown starts at overlay visibility, reaches zero after the configured duration, and never becomes negative.
-- [ ] Timeout, Skip, failed launch, and an overlay that closes without an action start a full interval; Postpone uses its relative delay; a later duplicate completion cannot replace the chosen deadline. The app shell reports failures during integration.
+- [x] Startup is due after one configured interval; before the deadline it does nothing, and a late wake starts only one launch.
+- [x] Display countdown starts at overlay visibility, reaches zero after the configured duration, and never becomes negative.
+- [x] The child's elapsed outcome after the display deadline, Skip, failed launch, and an overlay that closes without an action start a full interval; premature elapsed is ignored. Postpone uses its relative delay; a later duplicate completion cannot replace the chosen deadline. The parent never expires a visible break independently.
 
 **Verification:**
 
-- [ ] Write a failing `src/timing.rs` test before implementation, then run `cargo test timing::tests` to green.
-- [ ] Run `cargo test --all-targets`, `cargo fmt --all -- --check`, and `cargo build --release`.
+- [x] Write a failing `src/timing.rs` test before implementation, then run `cargo test timing::tests` to green.
+- [x] Run `cargo test --all-targets`, `cargo fmt --all -- --check`, and `cargo build --release`.
 
 **Dependencies:** Completed `configuration` module.
 
@@ -25,14 +25,13 @@
 
 **Acceptance criteria:**
 
-- [ ] Pause freezes the remaining interval and Resume continues it; both are unavailable during overlay launch/display.
-- [ ] Reload resets a waiting timer, updates a paused remainder while staying paused, and applies after an overlay ends in both launching and showing states without changing that overlay's original display duration.
-- [ ] Invalid reload does not call the timer and leaves its state unchanged; this caller behavior is tracked in `reminder-window` integration.
+- [x] Pause freezes the remaining interval and Resume continues it; both are unavailable during overlay launch/display.
+- [x] Reload resets a waiting timer, updates a paused remainder while staying paused, and applies after an overlay ends in both launching and showing states without changing that overlay's original display duration.
 
 **Verification:**
 
-- [ ] Write failing state-transition tests before implementation; run `cargo test timing::tests` and `cargo test --all-targets`.
-- [ ] Run `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo build --release`.
+- [x] Write failing state-transition tests before implementation; run `cargo test timing::tests` and `cargo test --all-targets`.
+- [x] Run `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo build --release`.
 
 **Dependencies:** Task 1.
 
@@ -40,6 +39,6 @@
 
 ## Checkpoint: Timing complete
 
-- [ ] Both tasks meet their local acceptance criteria and the pure module builds on macOS.
-- [ ] `reminder-window` carries the remaining overlay-ready, sleep/wake, invalid-reload, and X11 runtime checks.
-- [ ] The module is ready for review before `reminder-window` begins.
+- [x] Both tasks meet their local acceptance criteria and the pure module builds on macOS.
+- [x] `reminder-window` carries the remaining overlay-ready, failure reporting, child-outcome ordering/closure, sleep/wake, invalid-reload, and X11 runtime checks.
+- [x] The module is ready for review before `reminder-window` begins.

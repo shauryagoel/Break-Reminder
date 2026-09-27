@@ -1,4 +1,6 @@
 mod config;
+#[allow(dead_code)] // The app shell uses this module in the reminder-window increment.
+mod timing;
 
 use std::{env, ffi::OsStr, path::PathBuf, process};
 

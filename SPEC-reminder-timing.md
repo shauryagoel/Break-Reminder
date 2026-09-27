@@ -11,7 +11,7 @@ Schedule one recurring break using the validated durations from [`configuration`
 | App starts | First reminder is due after one full `interval`. |
 | Reminder becomes due | Enter a launching state and request one overlay; do not start another reminder while it launches or shows. |
 | Overlay is visible on every monitor | Start the display countdown from that moment, so launch and first-paint time do not reduce the configured duration. |
-| Display duration expires | End the break and start a full interval from that moment. |
+| Display duration expires | The overlay reports an elapsed outcome; end the break and start a full interval from that moment. |
 | Skip is clicked | End the break immediately and start a full interval from the click. |
 | Postpone is clicked | End the break immediately; the next reminder is due after that choice's relative delay from the click. |
 | Pause is clicked between breaks | Freeze the remaining interval. No reminder appears while paused. |
@@ -21,7 +21,7 @@ Schedule one recurring break using the validated durations from [`configuration`
 | Overlay launch fails or closes without an action | Start a full interval and report the error through the app shell; do not immediately relaunch. |
 | App restarts | Start a new full interval; no schedule is persisted. |
 
-The visible countdown reaches zero and never displays a negative value. If a timer wake is late, show only one reminder; there is no queue of missed breaks. Apply only the first terminal result from an overlay invocation. A child exit after a Skip or Postpone action must not reschedule again. Pause/Resume is unavailable while the overlay is launching or showing.
+The visible countdown reaches zero and never displays a negative value. If a timer wake is late, show only one reminder; there is no queue of missed breaks. The overlay child is the sole authority for ordering its timeout, Skip, and Postpone actions: it emits one terminal outcome. The parent applies that outcome once by invocation ID and ignores a later child exit. It accepts an elapsed outcome only after the overlay is visible and its display deadline has passed. The parent does not independently expire a visible break, because an earlier click could still be in transit. Pause/Resume is unavailable while the overlay is launching or showing.
 
 On macOS and X11/Linux, system sleep does not consume the remaining interval or an active display countdown. Awake idle time and a locked screen do count. The current [`std::time::Instant` underlying clocks](https://doc.rust-lang.org/std/time/struct.Instant.html) use Darwin uptime and Linux monotonic time; [Apple](https://developer.apple.com/documentation/driverkit/mach_absolute_time) and the [Linux manual](https://man7.org/linux/man-pages/man3/clock_getres.3.html) describe both as excluding suspend. Rust does not guarantee that behavior for all future versions or platforms. A macOS sleep/wake runtime check is required before release.
 
@@ -29,7 +29,7 @@ On macOS and X11/Linux, system sleep does not consume the remaining interval or 
 
 - Rust 2024 edition, the repository's Rust 1.89 minimum.
 - Rust standard library `Duration` and `Instant` for interval deadlines and countdown calculations. No scheduler crate or wall-clock arithmetic.
-- The future windowless app shell uses [`winit` `ControlFlow::WaitUntil`](https://docs.rs/winit/latest/winit/event_loop/enum.ControlFlow.html) for an efficient wait, checks the deadline on event-loop wakes, and receives overlay completion through an event-loop proxy. This integration belongs to `reminder-window`, not this module.
+- The future windowless app shell uses [`winit` `ControlFlow::WaitUntil`](https://docs.rs/winit/latest/winit/event_loop/enum.ControlFlow.html) for an efficient wait between breaks, checks the deadline on event-loop wakes, and receives the overlay child's single terminal outcome through an event-loop proxy. It confirms or forces child closure before another launch. This integration belongs to `reminder-window`, not this module.
 
 ## Commands
 
@@ -60,7 +60,7 @@ fn remaining(deadline: Instant, now: Instant) -> Duration {
 
 ## Testing strategy
 
-Use Rust's built-in tests in `src/timing.rs` with supplied `Instant` values. Cover due boundaries, one launch per due event, full interval after display timeout and Skip, relative Postpone, Pause/Resume preserving the remainder, reload in waiting/paused/launching/active states, a countdown that begins only after visibility and clamps to zero, and first-terminal-result-only behavior. Test long elapsed gaps to ensure they never queue multiple reminders. Integration checks in `reminder-window` must verify that invalid config reload leaves the timer untouched and that tray actions and child-process outcomes feed these transitions. Manually sleep and wake the macOS machine partway through a short interval and during a visible countdown; both must retain their pre-sleep remainder.
+Use Rust's built-in tests in `src/timing.rs` with supplied `Instant` values. Cover due boundaries, one launch per due event, full interval after the child's elapsed outcome and Skip, relative Postpone, Pause/Resume preserving the remainder, reload in waiting/paused/launching/active states, a countdown that begins only after visibility and clamps to zero, and first-terminal-result-only behavior. Test long elapsed gaps to ensure they never queue multiple reminders. Integration checks in `reminder-window` must verify that invalid config reload leaves the timer untouched, the child emits only one outcome, and child closure is confirmed before another overlay launches. Manually sleep and wake the macOS machine partway through a short interval and during a visible countdown; both must retain their pre-sleep remainder.
 
 ## Boundaries
 
