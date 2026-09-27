@@ -4,7 +4,7 @@ mod config;
 mod macos_window;
 mod overlay;
 mod protocol;
-#[allow(dead_code)] // Pause, reload, and close handling arrive with the menu and lifecycle tasks.
+#[allow(dead_code)] // display_remaining remains part of the tested timer contract.
 mod timing;
 
 use std::{env, ffi::OsStr, path::PathBuf, process};
@@ -43,6 +43,7 @@ fn run() -> Result<(), String> {
         if check_config || config_path.is_some() {
             return Err("--overlay cannot be combined with other options".into());
         }
+        ensure_supported_session()?;
         return overlay::run();
     }
     let path = match config_path {
@@ -55,6 +56,7 @@ fn run() -> Result<(), String> {
         }
     };
     if !check_config {
+        ensure_supported_session()?;
         return app::run(&path);
     }
     config::load(&path).map_err(|error| error.to_string())?;
@@ -63,4 +65,50 @@ fn run() -> Result<(), String> {
         .map_err(|error| format!("{}: {error}", path.display()))?;
     println!("Config valid: {}", resolved.display());
     Ok(())
+}
+
+fn ensure_supported_session() -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    x11_session(
+        env::var_os("XDG_SESSION_TYPE").as_deref(),
+        env::var_os("DISPLAY").as_deref(),
+    )
+    .map_err(str::to_owned)?;
+    Ok(())
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn x11_session(session_type: Option<&OsStr>, display: Option<&OsStr>) -> Result<(), &'static str> {
+    if session_type == Some(OsStr::new("wayland")) {
+        return Err("Wayland sessions are unsupported; start Break Reminder in an X11 session");
+    }
+    if display.is_none_or(OsStr::is_empty) {
+        return Err("DISPLAY is not set; start Break Reminder in an X11 session");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsStr;
+
+    use super::x11_session;
+
+    #[test]
+    fn linux_gui_requires_x11_session_and_display() {
+        assert!(x11_session(Some(OsStr::new("x11")), Some(OsStr::new(":0"))).is_ok());
+        assert!(x11_session(None, Some(OsStr::new(":0"))).is_ok());
+        assert_eq!(
+            x11_session(Some(OsStr::new("wayland")), Some(OsStr::new(":0"))),
+            Err("Wayland sessions are unsupported; start Break Reminder in an X11 session")
+        );
+        assert_eq!(
+            x11_session(Some(OsStr::new("x11")), None),
+            Err("DISPLAY is not set; start Break Reminder in an X11 session")
+        );
+        assert_eq!(
+            x11_session(None, Some(OsStr::new(""))),
+            Err("DISPLAY is not set; start Break Reminder in an X11 session")
+        );
+    }
 }

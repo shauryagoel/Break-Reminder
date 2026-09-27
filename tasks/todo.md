@@ -64,7 +64,7 @@ run = 'layout floating'
 
 **Acceptance criteria:**
 
-- [ ] Normal launch shows one macOS menu-bar icon and no ordinary window; a one-minute temporary config produces the overlay. The parent remains responsive while the child runs.
+- [x] Normal launch shows one macOS menu-bar icon and no ordinary window; a one-minute temporary config produces the overlay. The parent remains responsive while the child runs.
 - [x] READY triggers `Timer::visible` and START; Skip, configured Postpone, and elapsed schedule the approved delays in the normal child exit path.
 - [x] Child pipe reads/writes run off the event-loop thread; due/menu events continue while a reminder shows. Error-order hardening follows in Task 4.
 
@@ -73,7 +73,7 @@ run = 'layout floating'
 - [x] Write failing happy-path protocol/event tests before wiring the process; run full tests, formatting, Clippy, and release build.
 - [ ] Manually run a temporary one-minute config on the Mac through due, Skip, Postpone, and elapsed paths.
 
-**Mac process check:** With an isolated one-minute, eight-second config, the release parent stayed alive; at one minute it spawned `--overlay`, which exited after the configured duration while the parent remained alive. No process errors appeared. The menu-bar icon, window visibility, Skip, and Postpone still need a human visual check because automated desktop inspection was rejected.
+**Mac process check:** With an isolated one-minute, eight-second config, the release parent stayed alive; at one minute it spawned `--overlay`, which exited after the configured duration while the parent remained alive. In a later packaged run, the user confirmed that a one-minute parent reminder appeared, choosing 10 min closed it, the menu then showed a next break in about 10 min, and Quit removed the icon. AeroSpace listed no managed window for the idle parent. No process errors appeared. Skip through the parent remains a separate manual check because automated desktop inspection was rejected.
 
 **Dependencies:** Tasks 1–2.
 
@@ -111,14 +111,17 @@ run = 'layout floating'
 
 **Acceptance criteria:**
 
-- [ ] Pause freezes the remainder, Resume restores it, and both are disabled during a break; Next Break/Paused/Break in progress labels are accurate.
-- [ ] Valid reload calls `Timer::reload` once; invalid reload leaves config and timer unchanged and displays a short menu error with full stderr detail. An active overlay retains its old Postpone index mapping and appearance.
-- [ ] Open Config uses `open` on macOS or `xdg-open` on X11 with an absolute argument and reports a failure; Quit closes an active child before the parent exits.
+- [x] Pause freezes the remainder, Resume restores it, and both are disabled during a break; Next Break/Paused/Break in progress labels are accurate.
+- [x] Valid reload calls `Timer::reload` once; invalid reload leaves config and timer unchanged and displays a short menu error with full stderr detail. An active overlay retains its old Postpone index mapping and appearance.
+- [x] Open Config uses `open` on macOS or `xdg-open` on X11 with an absolute argument and reports a failure; Quit closes an active child before the parent exits.
 
 **Verification:**
 
-- [ ] Add focused tests for reload and action routing, run full tests, formatting, Clippy, and release build.
-- [ ] Check every menu action on the Mac, then perform a short interval and visible-break sleep/wake check.
+- [x] Add focused tests for reload and action routing, run full tests, formatting, Clippy, and release build.
+- [x] Check Pause, Resume, Reload Config, Open Config, and Quit in the packaged Mac menu.
+- [ ] Perform a short interval and visible-break sleep/wake check, and inspect invalid-reload feedback in the menu.
+
+**Implementation check:** Focused status/pause, valid/invalid reload with an active launch snapshot, and child-cancellation tests pass. In a packaged Mac run with a temporary one-minute config, the user confirmed that Pause showed Paused, Resume restored the countdown, Reload Config reported success, Open Config opened the YAML, and Quit removed the menu-bar icon. A later one-minute packaged run confirmed that a 10 min Postpone updated the next-break menu status. The parent exited with code 0. Sleep/wake and invalid-reload menu feedback still need live checks.
 
 **Dependencies:** Task 4.
 
@@ -139,12 +142,13 @@ run = 'layout floating'
 
 - [ ] Configured title, message, colors, image fit, countdown, Skip, and 1–12 ordered Postpone buttons render without clipping at 800×600 and laptop/external sizes.
 - [ ] Tab/Enter/Space and Escape operate the same actions as clicks; hover/focus states and the default palette are legible.
-- [ ] PNG/JPEG/WebP load within 20 MiB and 4096×4096 limits. Missing, corrupt, unsupported, or oversized images report an error and still show a usable reminder.
+- [x] PNG/JPEG/WebP load within 20 MiB and 4096×4096 limits. Missing, corrupt, unsupported, or oversized images report an error and still show a usable reminder.
 
 **Verification:**
 
-- [ ] Add focused image and contain/cover geometry tests, then run full tests, formatting, Clippy, and release build.
-- [ ] Inspect the actual Mac overlay with no image, a valid image, and a bad image; test all 12 choices and keyboard navigation.
+- [x] Add focused image and contain/cover geometry tests, then run full tests, formatting, Clippy, and release build.
+- [x] Inspect the packaged Mac overlay with a valid image, a missing image, all 12 visible choices, Tab/Enter, and Escape; the user confirmed the corrected centering and no-image fallback.
+- [ ] Check Space activation and scrolling on a display too short to show every choice.
 
 **Dependencies:** Tasks 2–5.
 
@@ -158,15 +162,17 @@ run = 'layout floating'
 
 **Acceptance criteria:**
 
-- [ ] The packaged Mac app has a stable bundle ID, `LSUIElement=true`, one menu-bar icon, and the same overlay behavior as a cargo run.
-- [ ] README gives concise macOS build/run, config, menu, image, and X11 prerequisites; it does not claim an unrun X11 check passed.
-- [ ] The Linux parent and overlay select X11 when an X11 session has both display variables; `XDG_SESSION_TYPE=wayland` or missing `DISPLAY` exits with a clear unsupported-session error.
+- [x] The packaged Mac app has a stable bundle ID, `LSUIElement=true`, one menu-bar icon, and the same overlay behavior as a cargo run.
+- [x] README gives concise macOS build/run, config, menu, image, and X11 prerequisites; it does not claim an unrun X11 check passed.
+- [x] The Linux parent and overlay select X11 when an X11 session has both display variables; `XDG_SESSION_TYPE=wayland` or missing `DISPLAY` exits with a clear unsupported-session error.
 - [ ] The documented Linux `cargo test --all-targets` and `cargo build --release` are run when a Linux host/CI is available; actual X11 session behavior is separately labelled until tested.
 
 **Verification:**
 
-- [ ] Run full Mac tests, format, Clippy, release build, bundle script, final menu/overlay visual check, and inspect idle CPU/memory with no persistent hidden window.
+- [x] Run full Mac tests, format, Clippy, release build, bundle script, final menu/overlay visual check, and inspect idle CPU/memory with no persistent hidden window.
 - [ ] Run available Linux build checks, test the Wayland-only startup guard where possible, and record any host limitation accurately.
+
+**Implementation check:** The README records the packaged Mac preview and menu results and explicitly leaves X11 compilation/runtime, external monitors, workspace switching, and sleep/wake open. Both Linux GUI modes pass through the same pre-GUI session guard, while `--check-config` remains usable without a display. All 44 tests, formatting, Clippy, release build, and `scripts/package-macos.sh` passed on macOS. A five-second idle snapshot reported 0.0% CPU and 47,024 KiB resident memory; AeroSpace listed no managed window for the parent. A Linux build and session check still require a suitable host.
 
 **Dependencies:** Tasks 1–6.
 
