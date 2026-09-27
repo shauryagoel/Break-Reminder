@@ -227,6 +227,9 @@ fn validate(path: &Path, config: &mut RawConfig) -> Result<(), ConfigError> {
         }
     }
     if let Some(image) = &mut config.appearance.image {
+        if image.path.as_os_str().is_empty() {
+            return Err(invalid(path, "appearance.image.path", "must not be empty"));
+        }
         let config_dir = path
             .parent()
             .filter(|dir| !dir.as_os_str().is_empty())
@@ -244,13 +247,6 @@ fn validate(path: &Path, config: &mut RawConfig) -> Result<(), ConfigError> {
         } else {
             config_dir.join(&image.path)
         };
-        if !resolved.is_file() || fs::File::open(&resolved).is_err() {
-            return Err(invalid(
-                path,
-                "appearance.image.path",
-                "must name a readable file",
-            ));
-        }
         image.path = resolved;
     }
     Ok(())
@@ -489,13 +485,30 @@ mod tests {
     }
 
     #[test]
-    fn rejects_missing_or_non_file_images() {
+    fn accepts_unreadable_image_paths_for_window_fallback() {
+        let fixture = Fixture::new();
+        for (yaml, expected) in [
+            (
+                "appearance:\n  image:\n    path: missing.png\n",
+                fixture.directory.join("missing.png"),
+            ),
+            (
+                "appearance:\n  image:\n    path: .\n",
+                fixture.directory.join("."),
+            ),
+        ] {
+            fixture.write(yaml);
+            let image = load(&fixture.path).unwrap().appearance.image.unwrap();
+            assert_eq!(image.path, expected);
+        }
+    }
+
+    #[test]
+    fn rejects_missing_image_path_and_invalid_fit() {
         let fixture = Fixture::new();
         for yaml in [
             "appearance:\n  image:\n    fit: cover\n",
             "appearance:\n  image:\n    path: ''\n",
-            "appearance:\n  image:\n    path: missing.png\n",
-            "appearance:\n  image:\n    path: .\n",
         ] {
             fixture.rejects(yaml, "path");
         }

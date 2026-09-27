@@ -37,7 +37,7 @@ Implement the approved [configuration spec](../SPEC-configuration.md) first. The
 |---|---|---|
 | YAML parser defaults differ from the intended strict schema | Misspelled or duplicate values could be accepted | Cover duplicate and unknown keys with executable tests before accepting the parser integration |
 | Two simultaneous first launches read the new file while it is still being written | One instance may temporarily report an invalid sample | `create_new` prevents overwrite; use atomic publication if simultaneous startup becomes a requirement |
-| Bad image path or invalid reload interrupts scheduling | App could lose working settings | Validate the path before returning a config; future caller retains the previous value on error. Image decode and no-image fallback belong to the window module |
+| Bad image or invalid reload interrupts scheduling | App could lose working settings | Require a nonempty image path, but let the window module report missing/unreadable files and show its no-image fallback. Other invalid settings keep the previous config on reload |
 | X11 compilation differs from macOS | Cross-platform claim is incomplete | Keep config platform-neutral and perform Linux/X11 build and runtime checks in the later window module |
 
 ## Open questions

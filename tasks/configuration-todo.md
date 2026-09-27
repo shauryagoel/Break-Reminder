@@ -26,7 +26,7 @@
 
 **Acceptance criteria:**
 
-- [x] Invalid syntax, unknown/duplicate nested keys, unsupported tags, out-of-range durations, empty/duplicate postpone choices, bad colors, empty text, nonexistent or non-file image paths, and files over 64 KiB return actionable errors.
+- [x] Invalid syntax, unknown/duplicate nested keys, unsupported tags, out-of-range durations, empty/duplicate postpone choices, bad colors, empty text, blank image paths, and files over 64 KiB return actionable errors. Missing/unreadable image files remain configured for the window's no-image fallback.
 - [x] Relative and `~/` image paths resolve as documented; postpone order is preserved.
 - [x] A failed second load returns an error without altering a previously returned valid config.
 
