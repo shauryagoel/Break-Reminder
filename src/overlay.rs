@@ -5,10 +5,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, Color32, RichText, Stroke};
 use winit::window::Window;
 
-use crate::protocol::{self, Action, Output, Snapshot};
+use crate::protocol::{self, Action, Fit, Output, Snapshot};
+
+#[path = "image.rs"]
+mod image;
 
 #[derive(Clone, Copy)]
 struct Screen {
@@ -196,6 +199,7 @@ pub fn run() -> Result<(), String> {
             let screens = screens(&root).map_err(io::Error::other)?;
             place_root(&root, screens[0]).map_err(io::Error::other)?;
             let context = creation.egui_ctx.clone();
+            Overlay::install_visuals(&context, &snapshot);
             let (sender, receiver) = mpsc::channel();
             thread::spawn(move || {
                 let result = protocol::read_start(&mut stdin).map_err(|error| error.to_string());
@@ -210,6 +214,8 @@ pub fn run() -> Result<(), String> {
 
 struct Overlay {
     snapshot: Snapshot,
+    image: Option<(egui::TextureHandle, Fit)>,
+    image_attempted: bool,
     start: Receiver<Result<(), String>>,
     deadline: Option<Instant>,
     output: Output<io::Stdout>,
@@ -233,6 +239,8 @@ impl Overlay {
     ) -> Self {
         Self {
             snapshot,
+            image: None,
+            image_attempted: false,
             start,
             deadline: None,
             output: Output::new(io::stdout()),
@@ -267,61 +275,184 @@ impl Overlay {
         )
     }
 
+    fn install_visuals(context: &egui::Context, snapshot: &Snapshot) {
+        let background = Self::color(&snapshot.background_color);
+        let foreground = Self::color(&snapshot.text_color);
+        let accent = Self::color(&snapshot.accent_color);
+        let mut visuals = egui::Visuals::dark();
+        visuals.override_text_color = Some(foreground);
+        visuals.widgets.inactive.bg_fill = background.lerp_to_gamma(foreground, 0.10);
+        visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, foreground.gamma_multiply(0.28));
+        visuals.widgets.hovered.bg_fill = background.lerp_to_gamma(accent, 0.22);
+        visuals.widgets.hovered.bg_stroke = Stroke::new(1.5, accent);
+        visuals.widgets.active.bg_fill = background.lerp_to_gamma(accent, 0.34);
+        visuals.widgets.active.bg_stroke = Stroke::new(1.5, accent);
+        visuals.selection.stroke = Stroke::new(1.5, accent);
+        context.set_visuals(visuals);
+    }
+
+    fn focus_ring(ui: &egui::Ui, response: &egui::Response, accent: Color32) {
+        if response.has_focus() {
+            response.scroll_to_me(None);
+            ui.painter().rect_stroke(
+                response.rect.shrink(1.0),
+                8.0,
+                Stroke::new(2.0, accent),
+                egui::StrokeKind::Inside,
+            );
+        }
+    }
+
+    fn centered_column(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
+        let available = ui.available_rect_before_wrap();
+        let width = (available.width() - 40.0).clamp(1.0, 680.0);
+        let left = available.center().x - width / 2.0;
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(left, available.top()),
+            egui::vec2(width, available.height()),
+        );
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(rect)
+                .layout(egui::Layout::top_down(egui::Align::Center)),
+            add_contents,
+        );
+    }
+
     fn paint(&self, ui: &mut egui::Ui, now: Instant) -> Option<Action> {
         let background = Self::color(&self.snapshot.background_color);
         let foreground = Self::color(&self.snapshot.text_color);
         let accent = Self::color(&self.snapshot.accent_color);
         let mut choice = None;
+        if self.deadline.is_some()
+            && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            choice = Some(Action::Skip);
+        }
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(background))
             .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.add_space((ui.available_height() - 310.0).max(24.0) / 2.0);
-                ui.vertical_centered(|ui| {
-                    let seconds = self
-                        .deadline
-                        .map(|deadline| {
-                            deadline
-                                .saturating_duration_since(now)
-                                .as_millis()
-                                .div_ceil(1000)
-                        })
-                        .unwrap_or(u128::from(self.snapshot.duration_seconds));
-                    ui.label(
-                        RichText::new(format!("{:02}:{:02}", seconds / 60, seconds % 60))
-                            .size(54.0)
-                            .color(accent),
-                    );
-                    ui.add_space(20.0);
-                    ui.label(
-                        RichText::new(&self.snapshot.title)
-                            .size(34.0)
-                            .strong()
-                            .color(foreground),
-                    );
-                    ui.add_space(12.0);
-                    ui.label(
-                        RichText::new(&self.snapshot.message)
-                            .size(20.0)
-                            .color(foreground),
-                    );
-                    ui.add_space(36.0);
-                    ui.add_enabled_ui(self.deadline.is_some(), |ui| {
-                        if ui.button("Skip break").clicked() {
-                            choice = Some(Action::Skip);
-                        }
-                        ui.add_space(12.0);
-                        ui.horizontal_wrapped(|ui| {
-                            for (index, minutes) in
-                                self.snapshot.postpone_minutes.iter().enumerate()
-                            {
-                                if ui.button(format!("Postpone {minutes} min")).clicked() {
-                                    choice = Some(Action::Postpone(index));
-                                }
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.add_space(48.0);
+                        Self::centered_column(ui, |ui| {
+                            let width = ui.available_width();
+                            ui.label(
+                                RichText::new("BREAK REMINDER")
+                                    .size(13.0)
+                                    .strong()
+                                    .color(accent),
+                            );
+                            ui.add_space(16.0);
+                            let seconds = self
+                                .deadline
+                                .map(|deadline| {
+                                    deadline
+                                        .saturating_duration_since(now)
+                                        .as_millis()
+                                        .div_ceil(1000)
+                                })
+                                .unwrap_or(u128::from(self.snapshot.duration_seconds));
+                            ui.label(
+                                RichText::new(format!("{:02}:{:02}", seconds / 60, seconds % 60))
+                                    .size(64.0)
+                                    .color(accent),
+                            );
+                            ui.add_space(16.0);
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(&self.snapshot.title)
+                                        .size(36.0)
+                                        .strong()
+                                        .color(foreground),
+                                )
+                                .wrap(),
+                            );
+                            ui.add_space(10.0);
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(&self.snapshot.message)
+                                        .size(19.0)
+                                        .color(foreground),
+                                )
+                                .wrap(),
+                            );
+                            if let Some((texture, fit)) = &self.image {
+                                ui.add_space(28.0);
+                                let bounds = egui::vec2(width.min(560.0), 180.0);
+                                let (size, uv) = image::geometry(texture.size_vec2(), bounds, *fit);
+                                ui.add(
+                                    egui::Image::from_texture(texture)
+                                        .fit_to_exact_size(size)
+                                        .maintain_aspect_ratio(false)
+                                        .uv(uv)
+                                        .corner_radius(8),
+                                );
                             }
+                            ui.add_space(32.0);
+                            ui.add_enabled_ui(self.deadline.is_some(), |ui| {
+                                let skip = ui.add_sized(
+                                    [width, 48.0],
+                                    egui::Button::new(
+                                        RichText::new("Skip this break")
+                                            .size(16.0)
+                                            .color(foreground),
+                                    )
+                                    .corner_radius(8),
+                                );
+                                Self::focus_ring(ui, &skip, accent);
+                                if skip.clicked() {
+                                    choice = Some(Action::Skip);
+                                }
+                                ui.add_space(20.0);
+                                ui.label(
+                                    RichText::new("OR POSTPONE")
+                                        .size(12.0)
+                                        .strong()
+                                        .color(accent),
+                                );
+                                ui.add_space(12.0);
+                                let columns = if width >= 620.0 {
+                                    4
+                                } else if width >= 420.0 {
+                                    3
+                                } else if width >= 260.0 {
+                                    2
+                                } else {
+                                    1
+                                };
+                                let gap = 10.0;
+                                let button_width =
+                                    (width - gap * (columns - 1) as f32) / columns as f32;
+                                for (row_index, row) in
+                                    self.snapshot.postpone_minutes.chunks(columns).enumerate()
+                                {
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = gap;
+                                        for (offset, minutes) in row.iter().enumerate() {
+                                            let index = row_index * columns + offset;
+                                            let button = ui.add_sized(
+                                                [button_width, 44.0],
+                                                egui::Button::new(
+                                                    RichText::new(format!("{minutes} min"))
+                                                        .size(16.0)
+                                                        .color(foreground),
+                                                )
+                                                .corner_radius(8),
+                                            );
+                                            Self::focus_ring(ui, &button, accent);
+                                            if button.clicked() {
+                                                choice = Some(Action::Postpone(index));
+                                            }
+                                        }
+                                    });
+                                    ui.add_space(10.0);
+                                }
+                            });
                         });
+                        ui.add_space(48.0);
                     });
-                });
             });
         choice
     }
@@ -330,6 +461,29 @@ impl Overlay {
 impl eframe::App for Overlay {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let context = ui.ctx().clone();
+        if !self.image_attempted {
+            self.image_attempted = true;
+            if let Some(configured) = &self.snapshot.image {
+                match image::load(
+                    &configured.path,
+                    context.input(|input| input.max_texture_side),
+                ) {
+                    Ok(pixels) => {
+                        self.image = Some((
+                            context.load_texture(
+                                "break-reminder-image",
+                                pixels,
+                                egui::TextureOptions::LINEAR,
+                            ),
+                            configured.fit,
+                        ));
+                    }
+                    Err(error) => {
+                        eprintln!("cannot display {}: {error}", configured.path.display());
+                    }
+                }
+            }
+        }
         if self.ready && self.deadline.is_none() {
             match self.start.try_recv() {
                 Ok(Ok(())) => {
@@ -473,7 +627,37 @@ impl eframe::App for Overlay {
 
 #[cfg(test)]
 mod tests {
-    use super::physical_to_logical;
+    use eframe::egui::{self, Rect, pos2, vec2};
+
+    use super::{Overlay, physical_to_logical};
+
+    #[test]
+    fn reminder_column_is_centered_in_800_point_viewport() {
+        let context = egui::Context::default();
+        let mut available = Rect::NOTHING;
+        let mut column = Rect::NOTHING;
+        let output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 600.0))),
+                ..Default::default()
+            },
+            |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.add_space(48.0);
+                        available = ui.available_rect_before_wrap();
+                        Overlay::centered_column(ui, |ui| {
+                            column = ui.max_rect();
+                            ui.label("Break reminder");
+                        });
+                    });
+            },
+        );
+        output.drop_without_applying_deltas();
+        assert!((column.center().x - available.center().x).abs() < 1.0);
+        assert!(column.width() <= 680.0);
+    }
 
     #[test]
     fn x11_monitor_geometry_preserves_negative_origin_and_scale() {
