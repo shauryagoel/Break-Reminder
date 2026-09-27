@@ -20,23 +20,23 @@ Implement the approved [configuration spec](../SPEC-configuration.md) first. The
 
 ### Phase 2: Validation and diagnostics
 
-2. [ ] Enforce the full YAML contract, image path rules, size limit, and actionable errors. Verify invalid reload leaves a previously loaded config usable.
+2. [x] Enforce the full YAML contract, image path rules, size limit, and actionable errors. Verify invalid reload leaves a previously loaded config usable.
 
 ### Checkpoint: Configuration complete
 
-- [ ] `cargo test --all-targets` passes.
-- [ ] `cargo fmt --all -- --check` passes.
-- [ ] `cargo clippy --all-targets -- -D warnings` passes.
-- [ ] `cargo build --release` succeeds on macOS.
-- [ ] Manual `cargo run -- --check-config --config ./assets/default-config.yaml` succeeds; an invalid temporary config fails clearly without opening a window.
-- [ ] Every success criterion in `SPEC-configuration.md` is satisfied or its later X11 verification is explicitly tracked.
+- [x] `cargo test --all-targets` passes.
+- [x] `cargo fmt --all -- --check` passes.
+- [x] `cargo clippy --all-targets -- -D warnings` passes.
+- [x] `cargo build --release` succeeds on macOS.
+- [x] Manual `cargo run -- --check-config --config ./assets/default-config.yaml` succeeds; an invalid temporary config fails clearly without opening a window.
+- [x] Every success criterion in `SPEC-configuration.md` is satisfied or its later X11 verification is explicitly tracked.
 
 ## Risks and mitigations
 
 | Risk | Impact | Mitigation |
 |---|---|---|
 | YAML parser defaults differ from the intended strict schema | Misspelled or duplicate values could be accepted | Cover duplicate and unknown keys with executable tests before accepting the parser integration |
-| First-run write races with another app instance | A user's config could be replaced | Use create-new semantics and load the winner's file |
+| Two simultaneous first launches read the new file while it is still being written | One instance may temporarily report an invalid sample | `create_new` prevents overwrite; use atomic publication if simultaneous startup becomes a requirement |
 | Bad image path or invalid reload interrupts scheduling | App could lose working settings | Validate the path before returning a config; future caller retains the previous value on error. Image decode and no-image fallback belong to the window module |
 | X11 compilation differs from macOS | Cross-platform claim is incomplete | Keep config platform-neutral and perform Linux/X11 build and runtime checks in the later window module |
 
