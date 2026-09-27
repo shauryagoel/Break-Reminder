@@ -1,0 +1,12 @@
+interval_minutes: 60
+duration_seconds: 30
+postpone_minutes: [10, 15]
+appearance:
+  title: "Time for a break"
+  message: "Step away from your screen and rest your eyes."
+  background_color: "#101827"
+  text_color: "#F8FAFC"
+  accent_color: "#69D5B2"
+  # image:
+  #   path: "~/Pictures/break.png"
+  #   fit: contain # contain or cover

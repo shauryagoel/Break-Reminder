@@ -6,15 +6,15 @@
 
 **Acceptance criteria:**
 
-- [ ] `cargo run -- --check-config` creates `~/.config/break-reminder/config.yaml` when absent and validates it without opening a window.
-- [ ] `cargo run -- --check-config --config ./assets/default-config.yaml` reads that path. A missing custom path in a temporary directory gets the sample, and repeated calls never overwrite its contents.
-- [ ] Omitted YAML fields inherit the documented defaults.
+- [x] The default path resolves to `~/.config/break-reminder/config.yaml`; loading its equivalent under a temporary home creates and validates the sample without opening a window.
+- [x] `cargo run -- --check-config --config ./assets/default-config.yaml` reads that path. A missing custom path in a temporary directory gets the sample, and repeated calls never overwrite its contents.
+- [x] Omitted YAML fields inherit the documented defaults.
 
 **Verification:**
 
-- [ ] `cargo test --all-targets` checks sample parsing, partial overrides, and create-new behavior using temporary paths.
-- [ ] `cargo run -- --check-config --config ./assets/default-config.yaml` reports the resolved path and success.
-- [ ] `cargo fmt --all -- --check` and `cargo build --release` pass.
+- [x] `cargo test --all-targets` checks sample parsing, partial overrides, and create-new behavior using temporary paths.
+- [x] `cargo run -- --check-config --config ./assets/default-config.yaml` reports the resolved path and success.
+- [x] `cargo fmt --all -- --check` and `cargo build --release` pass.
 
 **Dependencies:** None.
 

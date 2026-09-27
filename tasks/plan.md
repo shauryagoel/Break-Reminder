@@ -16,7 +16,7 @@ Implement the approved [configuration spec](../SPEC-configuration.md) first. The
 
 ### Phase 1: Runnable configuration path
 
-1. [ ] Bootstrap the Rust package, sample YAML, typed loading, and `--check-config` command. Verify the sample is created once and partial YAML uses defaults.
+1. [x] Bootstrap the Rust package, sample YAML, typed loading, and `--check-config` command. Verify the sample is created once and partial YAML uses defaults.
 
 ### Phase 2: Validation and diagnostics
 
