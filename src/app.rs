@@ -2,14 +2,18 @@ use std::{
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::{ChildStdin, ChildStdout, Command, Stdio},
-    sync::mpsc::{self, Receiver, Sender},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, Sender},
+    },
     thread,
     time::{Duration, Instant},
 };
 
 use tray_icon::{
     Icon, TrayIcon, TrayIconBuilder,
-    menu::{Menu, MenuEvent, MenuItem},
+    menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
 };
 use winit::{
     application::ApplicationHandler,
@@ -28,12 +32,14 @@ enum AppEvent {
     Menu(MenuEvent),
     Ready(u64),
     Finished(u64, Result<(Action, Instant), String>),
+    Opened(Result<(), String>),
 }
 
 struct Active {
     id: u64,
     snapshot: Snapshot,
     start: Sender<()>,
+    cancel: Arc<AtomicBool>,
 }
 
 struct AppState {
@@ -52,13 +58,68 @@ impl AppState {
         }
     }
 
-    fn begin(&mut self, id: u64, snapshot: Snapshot, start: Sender<()>) {
+    fn begin(&mut self, id: u64, snapshot: Snapshot, start: Sender<()>) -> Arc<AtomicBool> {
         debug_assert!(self.active.is_none());
+        let cancel = Arc::new(AtomicBool::new(false));
         self.active = Some(Active {
             id,
             snapshot,
             start,
+            cancel: cancel.clone(),
         });
+        cancel
+    }
+
+    fn toggle_pause(&mut self, now: Instant) -> bool {
+        if self.active.is_some() {
+            return false;
+        }
+        if self.timer.is_paused() {
+            self.timer.resume(now)
+        } else {
+            self.timer.pause(now)
+        }
+    }
+
+    fn reload(&mut self, path: &Path, now: Instant) -> Result<(), String> {
+        let replacement = config::load(path).map_err(|error| error.to_string())?;
+        self.timer
+            .reload(replacement.interval, replacement.display, now);
+        self.config = replacement;
+        Ok(())
+    }
+
+    fn status_text(&self, now: Instant) -> String {
+        if self.active.is_some() {
+            return "Break in progress".into();
+        }
+        if self.timer.is_paused() {
+            return "Paused".into();
+        }
+        let Some(deadline) = self.timer.deadline() else {
+            return "Break in progress".into();
+        };
+        let remaining = deadline.saturating_duration_since(now);
+        let minutes = remaining.as_nanos().div_ceil(60_000_000_000);
+        if minutes == 0 {
+            "Next break now".into()
+        } else if minutes == 1 {
+            "Next break in 1 min".into()
+        } else {
+            format!("Next break in {minutes} min")
+        }
+    }
+
+    fn next_status_refresh(&self, now: Instant) -> Option<Instant> {
+        let deadline = self.timer.deadline()?;
+        let minutes = deadline
+            .saturating_duration_since(now)
+            .as_nanos()
+            .div_ceil(60_000_000_000);
+        if minutes == 0 {
+            return Some(deadline);
+        }
+        Some(deadline - Duration::from_secs((minutes as u64 - 1) * 60))
     }
 
     fn ready(&mut self, id: u64, now: Instant) -> bool {
@@ -108,14 +169,52 @@ struct App {
     state: AppState,
     proxy: EventLoopProxy<AppEvent>,
     executable: PathBuf,
+    config_path: PathBuf,
     tray: Option<TrayIcon>,
+    menu: Option<TrayMenu>,
+    quitting: bool,
     error: Option<String>,
+}
+
+struct TrayMenu {
+    status: MenuItem,
+    pause: MenuItem,
+    note: MenuItem,
+}
+
+impl TrayMenu {
+    fn new() -> Result<(Self, Menu), String> {
+        let status = MenuItem::with_id("status", "Next break", false, None);
+        let pause = MenuItem::with_id("pause", "Pause", true, None);
+        let reload = MenuItem::with_id("reload", "Reload Config", true, None);
+        let open = MenuItem::with_id("open", "Open Config", true, None);
+        let note = MenuItem::with_id("note", "Settings loaded", false, None);
+        let quit = MenuItem::with_id("quit", "Quit Break Reminder", true, None);
+        let menu = Menu::with_items(&[
+            &status,
+            &pause,
+            &PredefinedMenuItem::separator(),
+            &reload,
+            &open,
+            &note,
+            &PredefinedMenuItem::separator(),
+            &quit,
+        ])
+        .map_err(|error| error.to_string())?;
+        Ok((
+            Self {
+                status,
+                pause,
+                note,
+            },
+            menu,
+        ))
+    }
 }
 
 impl App {
     fn initialize_tray(&mut self) -> Result<(), String> {
-        let quit = MenuItem::with_id("quit", "Quit Break Reminder", true, None);
-        let menu = Menu::with_items(&[&quit]).map_err(|error| error.to_string())?;
+        let (items, menu) = TrayMenu::new()?;
         let icon = tray_icon()?;
         self.tray = Some(
             TrayIconBuilder::new()
@@ -126,13 +225,89 @@ impl App {
                 .build()
                 .map_err(|error| format!("cannot create tray icon: {error}"))?,
         );
+        self.menu = Some(items);
+        self.refresh_menu(Instant::now());
         Ok(())
+    }
+
+    fn refresh_menu(&self, now: Instant) {
+        let Some(menu) = &self.menu else {
+            return;
+        };
+        let status = if self.quitting {
+            "Closing reminder...".into()
+        } else {
+            self.state.status_text(now)
+        };
+        if menu.status.text() != status {
+            menu.status.set_text(status);
+        }
+        let pause = if self.state.timer.is_paused() {
+            "Resume"
+        } else {
+            "Pause"
+        };
+        if menu.pause.text() != pause {
+            menu.pause.set_text(pause);
+        }
+        let enabled = !self.quitting && self.state.active.is_none();
+        if menu.pause.is_enabled() != enabled {
+            menu.pause.set_enabled(enabled);
+        }
+    }
+
+    fn feedback(&self, message: &str) {
+        if let Some(menu) = &self.menu {
+            menu.note.set_text(message);
+        }
+    }
+
+    fn report_error(&self, prefix: &str, error: &str) {
+        eprintln!("{prefix}: {error}");
+        let detail = error.split_once(": ").map_or(error, |(_, detail)| detail);
+        let detail = detail.replace('\n', " ");
+        let short = format!("{prefix}: {}", detail.chars().take(64).collect::<String>());
+        self.feedback(&short);
+    }
+
+    fn open_config(&self) {
+        let proxy = self.proxy.clone();
+        let path = self.config_path.clone();
+        thread::spawn(move || {
+            #[cfg(target_os = "macos")]
+            let opener = "open";
+            #[cfg(target_os = "linux")]
+            let opener = "xdg-open";
+            let result = Command::new(opener)
+                .arg(path)
+                .stdout(Stdio::null())
+                .status()
+                .map_err(|error| format!("cannot start {opener}: {error}"))
+                .and_then(|status| {
+                    if status.success() {
+                        Ok(())
+                    } else {
+                        Err(format!("{opener} exited with {status}"))
+                    }
+                });
+            let _ = proxy.send_event(AppEvent::Opened(result));
+        });
+    }
+
+    fn quit(&mut self, event_loop: &ActiveEventLoop) {
+        self.quitting = true;
+        if let Some(active) = &self.state.active {
+            active.cancel.store(true, Ordering::Relaxed);
+            self.refresh_menu(Instant::now());
+        } else {
+            event_loop.exit();
+        }
     }
 
     fn launch(&mut self, id: u64) {
         let snapshot = Snapshot::from_config(&self.state.config);
         let (sender, receiver) = mpsc::channel();
-        self.state.begin(id, snapshot.clone(), sender);
+        let cancel = self.state.begin(id, snapshot.clone(), sender);
         let executable = self.executable.clone();
         let proxy = self.proxy.clone();
         thread::spawn(move || {
@@ -141,6 +316,7 @@ impl App {
                 id,
                 &snapshot,
                 receiver,
+                cancel.as_ref(),
                 WorkerTimeouts::default(),
                 || {
                     proxy
@@ -175,24 +351,60 @@ impl ApplicationHandler<AppEvent> for App {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
-            AppEvent::Menu(event) if event.id() == "quit" => event_loop.exit(),
+            AppEvent::Menu(event) if event.id() == "quit" => self.quit(event_loop),
+            AppEvent::Menu(event) if !self.quitting => {
+                match event.id().0.as_str() {
+                    "pause" => {
+                        self.state.toggle_pause(Instant::now());
+                    }
+                    "reload" => match self.state.reload(&self.config_path, Instant::now()) {
+                        Ok(()) => self.feedback("Settings reloaded"),
+                        Err(error) => self.report_error("Reload failed", &error),
+                    },
+                    "open" => self.open_config(),
+                    _ => {}
+                }
+                self.refresh_menu(Instant::now());
+            }
             AppEvent::Menu(_) => {}
             AppEvent::Ready(id) => {
-                self.state.ready(id, Instant::now());
+                if !self.quitting {
+                    self.state.ready(id, Instant::now());
+                }
             }
             AppEvent::Finished(id, action) => {
-                self.state.finish(id, action, Instant::now());
+                if self.quitting {
+                    if self
+                        .state
+                        .active
+                        .as_ref()
+                        .is_some_and(|active| active.id == id)
+                    {
+                        self.state.active = None;
+                        event_loop.exit();
+                    }
+                } else {
+                    self.state.finish(id, action, Instant::now());
+                    self.refresh_menu(Instant::now());
+                }
             }
+            AppEvent::Opened(result) => match result {
+                Ok(()) => self.feedback("Configuration opened"),
+                Err(error) => self.report_error("Open failed", &error),
+            },
         }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if self.state.active.is_none()
-            && let Some(Tick::LaunchOverlay(id)) = self.state.timer.tick(Instant::now())
+        let now = Instant::now();
+        if !self.quitting
+            && self.state.active.is_none()
+            && let Some(Tick::LaunchOverlay(id)) = self.state.timer.tick(now)
         {
             self.launch(id);
         }
-        event_loop.set_control_flow(match self.state.timer.deadline() {
+        self.refresh_menu(now);
+        event_loop.set_control_flow(match self.state.next_status_refresh(now) {
             Some(deadline) => ControlFlow::WaitUntil(deadline),
             None => ControlFlow::Wait,
         });
@@ -440,9 +652,13 @@ fn run_child(
     id: u64,
     snapshot: &Snapshot,
     start: Receiver<()>,
+    cancel: &AtomicBool,
     timeouts: WorkerTimeouts,
     mut on_ready: impl FnMut() -> Result<(), String>,
 ) -> Result<(Action, Instant), String> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err("overlay cancelled for Quit".into());
+    }
     let mut child = Command::new(executable)
         .arg("--overlay")
         .stdin(Stdio::piped())
@@ -472,6 +688,9 @@ fn run_child(
     let mut exited_at = None;
     let mut post_exit_drained = 0;
     loop {
+        if cancel.load(Ordering::Relaxed) && observed.exit_success.is_none() {
+            let _ = child.kill();
+        }
         if observed.exit_success.is_none() {
             match child.try_wait() {
                 Ok(Some(status)) => {
@@ -484,6 +703,9 @@ fn run_child(
                 Ok(None) => {}
                 Err(error) => observed.fail(format!("cannot inspect overlay process: {error}")),
             }
+        }
+        if cancel.load(Ordering::Relaxed) && observed.exit_success.is_some() {
+            return Err("overlay cancelled for Quit".into());
         }
         if let Some(result) = observed.outcome() {
             return result;
@@ -570,7 +792,8 @@ fn run_child(
 }
 
 pub fn run(config_path: &Path) -> Result<(), String> {
-    let config = config::load(config_path).map_err(|error| error.to_string())?;
+    let config_path = std::path::absolute(config_path).map_err(|error| error.to_string())?;
+    let config = config::load(&config_path).map_err(|error| error.to_string())?;
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
     let mut builder = EventLoop::<AppEvent>::with_user_event();
     #[cfg(target_os = "macos")]
@@ -598,7 +821,10 @@ pub fn run(config_path: &Path) -> Result<(), String> {
         state: AppState::new(config, Instant::now()),
         proxy,
         executable,
+        config_path,
         tray: None,
+        menu: None,
+        quitting: false,
         error: None,
     };
     event_loop
@@ -613,9 +839,14 @@ pub fn run(config_path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use std::{
+        fs,
         io::Cursor,
-        sync::mpsc,
-        time::{Duration, Instant},
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+            mpsc,
+        },
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
 
     use crate::{
@@ -658,6 +889,126 @@ mod tests {
             start + Duration::from_secs(70),
         ));
         assert_eq!(app.timer.deadline(), Some(start + Duration::from_secs(965)));
+    }
+
+    #[test]
+    fn menu_status_and_pause_follow_the_remaining_interval() {
+        let mut config = config::load("assets/default-config.yaml".as_ref()).unwrap();
+        config.interval = Duration::from_secs(120);
+        let start = Instant::now();
+        let mut app = AppState::new(config, start);
+        assert_eq!(app.status_text(start), "Next break in 2 min");
+        assert_eq!(
+            app.next_status_refresh(start),
+            Some(start + Duration::from_secs(60))
+        );
+        assert_eq!(
+            app.status_text(start + Duration::from_secs(60)),
+            "Next break in 1 min"
+        );
+
+        assert!(app.toggle_pause(start + Duration::from_secs(70)));
+        assert_eq!(app.status_text(start + Duration::from_secs(90)), "Paused");
+        assert_eq!(
+            app.next_status_refresh(start + Duration::from_secs(90)),
+            None
+        );
+        assert!(app.toggle_pause(start + Duration::from_secs(500)));
+        assert_eq!(app.timer.deadline(), Some(start + Duration::from_secs(550)));
+        let Some(Tick::LaunchOverlay(id)) = app.timer.tick(start + Duration::from_secs(550)) else {
+            panic!("break was not due");
+        };
+        let (sender, _receiver) = mpsc::channel();
+        app.begin(id, Snapshot::from_config(&app.config), sender);
+        assert_eq!(
+            app.status_text(start + Duration::from_secs(550)),
+            "Break in progress"
+        );
+        assert!(!app.toggle_pause(start + Duration::from_secs(551)));
+    }
+
+    #[test]
+    fn reload_replaces_valid_config_but_keeps_invalid_settings_and_active_snapshot() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "break-reminder-reload-{}-{suffix}.yaml",
+            std::process::id()
+        ));
+        fs::write(&path, "interval_minutes: 2\npostpone_minutes: [10, 15]\n").unwrap();
+        let start = Instant::now();
+        let config = config::load(&path).unwrap();
+        let mut app = AppState::new(config, start);
+
+        fs::write(&path, "interval_minutes: 0\n").unwrap();
+        assert!(app.reload(&path, start + Duration::from_secs(30)).is_err());
+        assert_eq!(app.timer.deadline(), Some(start + Duration::from_secs(120)));
+        assert_eq!(app.config.postpone[1], Duration::from_secs(900));
+
+        fs::write(&path, "interval_minutes: 1\npostpone_minutes: [5, 20]\n").unwrap();
+        app.reload(&path, start + Duration::from_secs(30)).unwrap();
+        assert_eq!(app.timer.deadline(), Some(start + Duration::from_secs(90)));
+        let Some(Tick::LaunchOverlay(id)) = app.timer.tick(start + Duration::from_secs(90)) else {
+            panic!("break was not due");
+        };
+        let (sender, receiver) = mpsc::channel();
+        app.begin(id, Snapshot::from_config(&app.config), sender);
+        fs::write(&path, "interval_minutes: 3\npostpone_minutes: [2, 7]\n").unwrap();
+        app.reload(&path, start + Duration::from_secs(91)).unwrap();
+        assert_eq!(app.config.postpone[1], Duration::from_secs(420));
+        assert!(app.ready(id, start + Duration::from_secs(92)));
+        assert_eq!(receiver.try_recv(), Ok(()));
+        assert!(app.finish(
+            id,
+            Ok((Action::Postpone(1), start + Duration::from_secs(93))),
+            start + Duration::from_secs(93)
+        ));
+        assert_eq!(
+            app.timer.deadline(),
+            Some(start + Duration::from_secs(1293))
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancellation_stops_a_running_child_without_waiting_for_its_timeout() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "break-reminder-cancel-{}-{suffix}",
+            std::process::id()
+        ));
+        fs::write(&path, "#!/bin/sh\nexec /bin/sleep 5\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        let snapshot =
+            Snapshot::from_config(&config::load("assets/default-config.yaml".as_ref()).unwrap());
+        let (_, receiver) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let signal = cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            signal.store(true, Ordering::Relaxed);
+        });
+        let begin = Instant::now();
+        let result = run_child(
+            &path,
+            1,
+            &snapshot,
+            receiver,
+            cancel.as_ref(),
+            WorkerTimeouts::default(),
+            || Ok(()),
+        );
+        fs::remove_file(path).unwrap();
+        assert!(result.unwrap_err().contains("cancelled"));
+        assert!(begin.elapsed() < Duration::from_secs(3));
     }
 
     #[test]
@@ -888,6 +1239,7 @@ mod tests {
                 1,
                 &snapshot,
                 receiver,
+                &AtomicBool::new(false),
                 WorkerTimeouts::default(),
                 || Ok(()),
             )
@@ -905,6 +1257,7 @@ mod tests {
             1,
             &snapshot,
             receiver,
+            &AtomicBool::new(false),
             WorkerTimeouts::default(),
             || start.send(()).map_err(|error| error.to_string()),
         );
@@ -919,6 +1272,7 @@ mod tests {
             1,
             &snapshot,
             receiver,
+            &AtomicBool::new(false),
             WorkerTimeouts {
                 ready: Duration::from_millis(200),
                 action_grace: Duration::from_millis(200),
@@ -941,6 +1295,7 @@ mod tests {
             2,
             &snapshot,
             receiver,
+            &AtomicBool::new(false),
             WorkerTimeouts {
                 ready: Duration::from_secs(2),
                 action_grace: Duration::from_secs(5),
