@@ -65,13 +65,15 @@ run = 'layout floating'
 **Acceptance criteria:**
 
 - [ ] Normal launch shows one macOS menu-bar icon and no ordinary window; a one-minute temporary config produces the overlay. The parent remains responsive while the child runs.
-- [ ] READY triggers `Timer::visible` and START; Skip, configured Postpone, and elapsed schedule the approved delays in the normal child exit path.
-- [ ] Child pipe reads/writes run off the event-loop thread; due/menu events continue while a reminder shows. Error-order hardening follows in Task 4.
+- [x] READY triggers `Timer::visible` and START; Skip, configured Postpone, and elapsed schedule the approved delays in the normal child exit path.
+- [x] Child pipe reads/writes run off the event-loop thread; due/menu events continue while a reminder shows. Error-order hardening follows in Task 4.
 
 **Verification:**
 
-- [ ] Write failing happy-path protocol/event tests before wiring the process; run full tests, formatting, Clippy, and release build.
+- [x] Write failing happy-path protocol/event tests before wiring the process; run full tests, formatting, Clippy, and release build.
 - [ ] Manually run a temporary one-minute config on the Mac through due, Skip, Postpone, and elapsed paths.
+
+**Mac process check:** With an isolated one-minute, eight-second config, the release parent stayed alive; at one minute it spawned `--overlay`, which exited after the configured duration while the parent remained alive. No process errors appeared. The menu-bar icon, window visibility, Skip, and Postpone still need a human visual check because automated desktop inspection was rejected.
 
 **Dependencies:** Tasks 1–2.
 

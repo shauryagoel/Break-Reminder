@@ -1,10 +1,10 @@
+mod app;
 mod config;
 #[cfg(target_os = "macos")]
 mod macos_window;
 mod overlay;
-#[allow(dead_code)] // Snapshot writing and action parsing are used by the tray parent in Task 3.
 mod protocol;
-#[allow(dead_code)] // The app shell uses this module in the reminder-window increment.
+#[allow(dead_code)] // Pause, reload, and close handling arrive with the menu and lifecycle tasks.
 mod timing;
 
 use std::{env, ffi::OsStr, path::PathBuf, process};
@@ -45,9 +45,6 @@ fn run() -> Result<(), String> {
         }
         return overlay::run();
     }
-    if !check_config {
-        return Err("Usage: break-reminder --check-config [--config PATH]".into());
-    }
     let path = match config_path {
         Some(path) => path,
         None => {
@@ -57,6 +54,9 @@ fn run() -> Result<(), String> {
             config::default_path(&PathBuf::from(home))
         }
     };
+    if !check_config {
+        return app::run(&path);
+    }
     config::load(&path).map_err(|error| error.to_string())?;
     let resolved = path
         .canonicalize()
