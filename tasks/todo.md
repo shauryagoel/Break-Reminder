@@ -6,13 +6,13 @@
 
 **Acceptance criteria:**
 
-- [ ] The snapshot parser rejects an oversized, truncated, or malformed frame; terminal lines reject unknown actions and out-of-range Postpone indices. Tests cover framing and one-action latching.
+- [x] The snapshot parser rejects an oversized, truncated, or malformed frame; terminal lines reject unknown actions and out-of-range Postpone indices. Tests cover framing and one-action latching.
 - [ ] A direct Mac overlay run shows a clickable ordinary borderless window, starts the countdown only after READY/START, and exits after one outcome. `--check-config` still opens no UI.
-- [ ] The dependency set uses Rust 1.95, eframe `glow`/X11/AccessKit without default `wgpu`/Wayland, and a private mode that never creates the parent tray.
+- [x] The dependency set uses Rust 1.95, eframe `glow`/X11/AccessKit without default `wgpu`, and a private mode that never creates the parent tray. Document that transitive dependencies still include Wayland code.
 
 **Verification:**
 
-- [ ] Write failing protocol/state tests before implementation; run `cargo test --all-targets`, formatting, Clippy, and release build.
+- [x] Write failing protocol/state tests before implementation; run `cargo test --all-targets`, formatting, Clippy, and release build.
 - [ ] Drive the private child through a local pipe and inspect its window/action on the Mac.
 
 **Dependencies:** Completed `configuration` and `reminder-timing` modules.
@@ -146,7 +146,7 @@
 
 - [ ] The packaged Mac app has a stable bundle ID, `LSUIElement=true`, one menu-bar icon, and the same overlay behavior as a cargo run.
 - [ ] README gives concise macOS build/run, config, menu, image, and X11 prerequisites; it does not claim an unrun X11 check passed.
-- [ ] A Wayland-only Linux session exits with a clear unsupported-session error instead of running without a visible tray.
+- [ ] The Linux parent and overlay select X11 when an X11 session has both display variables; `XDG_SESSION_TYPE=wayland` or missing `DISPLAY` exits with a clear unsupported-session error.
 - [ ] The documented Linux `cargo test --all-targets` and `cargo build --release` are run when a Linux host/CI is available; actual X11 session behavior is separately labelled until tested.
 
 **Verification:**

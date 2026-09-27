@@ -20,7 +20,7 @@ bounded child snapshot and one-screen overlay
 - In the child, first build a simple egui overlay and test actual Mac window behavior. Then add one viewport per monitor and macOS-only AppKit frame/level adjustment. Use the native accessory policy and package `LSUIElement=true`; test the installed AeroSpace before relying on a float rule. The X11 branch uses absolute monitor geometry and is explicitly provisional until runtime-tested there.
 - The parent owns `Config`, `Timer`, menu items, and one child invocation. I/O workers forward ready, outcome, EOF, and exit events through a `winit` proxy; the event loop handles timer/menu transitions without waiting on pipes or processes. Keep the launch-time config snapshot so Postpone indices remain stable across a reload.
 - Use the Rust `image` crate only for bounded local PNG/JPEG/WebP decoding. Draw the rest with egui and existing YAML colors; no web UI, Swift UI, extra theme system, or persistent renderer window.
-- Raise package MSRV to 1.95 for eframe 0.36.2. Disable default `wgpu`/Wayland and tray GTK features as specified; use `glow`, X11, AccessKit, and KSNI.
+- Raise package MSRV to 1.95 for eframe 0.36.2. Disable default `wgpu` and tray GTK features; use `glow`, X11, AccessKit, and KSNI. Eframe still pulls transitive Wayland code into winit, so force X11 at runtime and reject Wayland-only sessions.
 
 ## Task list
 
@@ -61,7 +61,7 @@ bounded child snapshot and one-screen overlay
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| AeroSpace tiles or moves the overlay, or eframe flashes a small root window | Break does not cover the active screen | Test the native frame and accessory/no-close-button behavior in Tasks 1–2 before building the full UI; document a precise floating rule only if needed |
+| AeroSpace tiles or moves the overlay, or eframe flashes a small root window | Break does not cover the active screen | Test the native frame and accessory/borderless window behavior in Tasks 1–2 before building the full UI; document a precise floating rule only if needed |
 | eframe child viewport lacks a public winit handle | Other monitors remain incorrectly sized | Match unique titles in `NSApplication.windows()` before showing children; test every attached monitor; switch to one process per monitor only if that runtime probe fails |
 | A child action, buffered stdout, and exit arrive in different orders | Postpone is lost or a break is scheduled twice | Task 4 latches one child action, orders stdout/EOF, waits for exit or forces close, and tests the event orders |
 | No Linux/X11 host is available on the current Mac | X11 behavior cannot be proven locally | Keep X11-only code behind platform checks, document native build prerequisites and executable Linux commands; report build/runtime verification separately |

@@ -1,4 +1,7 @@
 mod config;
+mod overlay;
+#[allow(dead_code)] // Snapshot writing and action parsing are used by the tray parent in Task 3.
+mod protocol;
 #[allow(dead_code)] // The app shell uses this module in the reminder-window increment.
 mod timing;
 
@@ -14,10 +17,13 @@ fn main() {
 fn run() -> Result<(), String> {
     let mut args = env::args_os().skip(1);
     let mut check_config = false;
+    let mut overlay_mode = false;
     let mut config_path = None;
     while let Some(arg) = args.next() {
         if arg == OsStr::new("--check-config") {
             check_config = true;
+        } else if arg == OsStr::new("--overlay") {
+            overlay_mode = true;
         } else if arg == OsStr::new("--config") {
             if config_path.is_some() {
                 return Err("--config may only be given once".into());
@@ -30,6 +36,12 @@ fn run() -> Result<(), String> {
         } else {
             return Err(format!("Unknown argument: {}", arg.to_string_lossy()));
         }
+    }
+    if overlay_mode {
+        if check_config || config_path.is_some() {
+            return Err("--overlay cannot be combined with other options".into());
+        }
+        return overlay::run();
     }
     if !check_config {
         return Err("Usage: break-reminder --check-config [--config PATH]".into());
