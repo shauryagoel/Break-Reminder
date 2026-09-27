@@ -1,47 +1,45 @@
-# Tasks: `configuration`
+# Tasks: `reminder-timing`
 
-## Task 1: Runnable configuration path
+## Task 1: Due and break completion
 
-**Description:** Create the Rust package and a usable config check command. On first use, create the sample YAML without overwriting an existing file. Parse sample and partial YAML into defaults.
-
-**Acceptance criteria:**
-
-- [x] The default path resolves to `~/.config/break-reminder/config.yaml`; loading its equivalent under a temporary home creates and validates the sample without opening a window.
-- [x] `cargo run -- --check-config --config ./assets/default-config.yaml` reads that path. A missing custom path in a temporary directory gets the sample, and repeated calls never overwrite its contents.
-- [x] Omitted YAML fields inherit the documented defaults.
-
-**Verification:**
-
-- [x] `cargo test --all-targets` checks sample parsing, partial overrides, and create-new behavior using temporary paths.
-- [x] `cargo run -- --check-config --config ./assets/default-config.yaml` reports the resolved path and success.
-- [x] `cargo fmt --all -- --check` and `cargo build --release` pass.
-
-**Dependencies:** None.
-
-**Files likely touched:** `Cargo.toml`, `src/main.rs`, `src/config.rs`, `assets/default-config.yaml` (4).
-
-## Task 2: Validate the full YAML contract
-
-**Description:** Add semantic validation, bounded parsing, image path resolution, and clear errors. Keep loading atomic for future menu reloads.
+**Description:** Add the pure timer state and countdown calculation. Handle one due event, overlay readiness, and a single terminal result that starts either a full interval or a selected postpone delay.
 
 **Acceptance criteria:**
 
-- [x] Invalid syntax, unknown/duplicate nested keys, unsupported tags, out-of-range durations, empty/duplicate postpone choices, bad colors, empty text, nonexistent or non-file image paths, and files over 64 KiB return actionable errors.
-- [x] Relative and `~/` image paths resolve as documented; postpone order is preserved.
-- [x] A failed second load returns an error without altering a previously returned valid config.
+- [ ] Startup is due after one configured interval; before the deadline it does nothing, and a late wake starts only one launch.
+- [ ] Display countdown starts at overlay visibility, reaches zero after the configured duration, and never becomes negative.
+- [ ] Timeout, Skip, failed launch, and an overlay that closes without an action start a full interval; Postpone uses its relative delay; a later duplicate completion cannot replace the chosen deadline. The app shell reports failures during integration.
 
 **Verification:**
 
-- [x] `cargo test --all-targets` exercises each validation branch and path form.
-- [x] `cargo run -- --check-config --config ./assets/default-config.yaml` succeeds; a temporary invalid YAML file exits unsuccessfully with its path and reason and opens no window.
-- [x] `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo build --release` pass.
+- [ ] Write a failing `src/timing.rs` test before implementation, then run `cargo test timing::tests` to green.
+- [ ] Run `cargo test --all-targets`, `cargo fmt --all -- --check`, and `cargo build --release`.
+
+**Dependencies:** Completed `configuration` module.
+
+**Files likely touched:** `src/timing.rs`, `src/main.rs` (2).
+
+## Task 2: Pause, Resume, and reload
+
+**Description:** Preserve the remainder across manual Pause/Resume and apply a new interval on successful config reload according to the timer state.
+
+**Acceptance criteria:**
+
+- [ ] Pause freezes the remaining interval and Resume continues it; both are unavailable during overlay launch/display.
+- [ ] Reload resets a waiting timer, updates a paused remainder while staying paused, and applies after an overlay ends in both launching and showing states without changing that overlay's original display duration.
+- [ ] Invalid reload does not call the timer and leaves its state unchanged; this caller behavior is tracked in `reminder-window` integration.
+
+**Verification:**
+
+- [ ] Write failing state-transition tests before implementation; run `cargo test timing::tests` and `cargo test --all-targets`.
+- [ ] Run `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo build --release`.
 
 **Dependencies:** Task 1.
 
-**Files likely touched:** `src/config.rs`, `src/main.rs` (2).
+**Files likely touched:** `src/timing.rs` (1).
 
-## Checkpoint: Configuration complete
+## Checkpoint: Timing complete
 
-- [x] Tasks 1 and 2 meet their acceptance criteria.
-- [x] All success criteria in `SPEC-configuration.md` pass on macOS, with X11 verification tracked for later.
-- [x] The module is ready for review before `reminder-timing` begins.
+- [ ] Both tasks meet their local acceptance criteria and the pure module builds on macOS.
+- [ ] `reminder-window` carries the remaining overlay-ready, sleep/wake, invalid-reload, and X11 runtime checks.
+- [ ] The module is ready for review before `reminder-window` begins.
