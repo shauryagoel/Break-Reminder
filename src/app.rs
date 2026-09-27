@@ -1,7 +1,7 @@
 use std::{
-    io::{self, BufRead, BufReader, Read, Write},
+    io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{ChildStdin, ChildStdout, Command, Stdio},
     sync::mpsc::{self, Receiver, Sender},
     thread,
     time::{Duration, Instant},
@@ -27,7 +27,7 @@ use crate::{
 enum AppEvent {
     Menu(MenuEvent),
     Ready(u64),
-    Finished(u64, Result<Action, String>),
+    Finished(u64, Result<(Action, Instant), String>),
 }
 
 struct Active {
@@ -71,25 +71,32 @@ impl AppState {
         active.start.send(()).is_ok()
     }
 
-    fn finish(&mut self, id: u64, action: Result<Action, String>, now: Instant) -> bool {
+    fn finish(&mut self, id: u64, action: Result<(Action, Instant), String>, now: Instant) -> bool {
         let Some(active) = self.active.as_ref().filter(|active| active.id == id) else {
             return false;
         };
-        let completion = match action {
-            Ok(Action::Elapsed) => Completion::Elapsed,
-            Ok(Action::Skip) => Completion::Skip,
-            Ok(Action::Postpone(index)) => active
-                .snapshot
-                .postpone_minutes
-                .get(index)
-                .map(|minutes| Completion::Postpone(Duration::from_secs(u64::from(*minutes) * 60)))
-                .unwrap_or(Completion::Failed),
+        let (completion, at) = match action {
+            Ok((Action::Elapsed, at)) => (Completion::Elapsed, at),
+            Ok((Action::Skip, at)) => (Completion::Skip, at),
+            Ok((Action::Postpone(index), at)) => {
+                match active.snapshot.postpone_minutes.get(index) {
+                    Some(minutes) => (
+                        Completion::Postpone(Duration::from_secs(u64::from(*minutes) * 60)),
+                        at,
+                    ),
+                    None => {
+                        eprintln!("overlay {id}: POSTPONE index is out of range");
+                        (Completion::Failed, now)
+                    }
+                }
+            }
             Err(error) => {
                 eprintln!("overlay {id}: {error}");
-                Completion::Failed
+                (Completion::Failed, now)
             }
         };
-        if !self.timer.complete(id, completion, now) {
+        if !self.timer.complete(id, completion, at) {
+            eprintln!("overlay {id}: outcome arrived before its display deadline");
             self.timer.complete(id, Completion::Failed, now);
         }
         self.active = None;
@@ -129,7 +136,18 @@ impl App {
         let executable = self.executable.clone();
         let proxy = self.proxy.clone();
         thread::spawn(move || {
-            let result = run_child(&executable, id, &snapshot, &proxy, receiver);
+            let result = run_child(
+                &executable,
+                id,
+                &snapshot,
+                receiver,
+                WorkerTimeouts::default(),
+                || {
+                    proxy
+                        .send_event(AppEvent::Ready(id))
+                        .map_err(|_| "parent event loop closed".to_owned())
+                },
+            );
             let _ = proxy.send_event(AppEvent::Finished(id, result));
         });
     }
@@ -169,7 +187,9 @@ impl ApplicationHandler<AppEvent> for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if let Some(Tick::LaunchOverlay(id)) = self.state.timer.tick(Instant::now()) {
+        if self.state.active.is_none()
+            && let Some(Tick::LaunchOverlay(id)) = self.state.timer.tick(Instant::now())
+        {
             self.launch(id);
         }
         event_loop.set_control_flow(match self.state.timer.deadline() {
@@ -194,62 +214,359 @@ fn tray_icon() -> Result<Icon, String> {
     Icon::from_rgba(rgba, 32, 32).map_err(|error| error.to_string())
 }
 
-fn read_line(reader: &mut impl BufRead) -> Result<String, String> {
+fn read_line(reader: &mut impl BufRead) -> Result<Option<String>, String> {
     let mut bytes = Vec::new();
-    (&mut *reader)
+    let count = (&mut *reader)
         .take(128)
         .read_until(b'\n', &mut bytes)
         .map_err(|error| error.to_string())?;
+    if count == 0 {
+        return Ok(None);
+    }
     if bytes.last() != Some(&b'\n') {
         return Err("overlay closed without a complete protocol line".into());
     }
-    String::from_utf8(bytes).map_err(|error| error.to_string())
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
+#[derive(Clone, Copy)]
+struct WorkerTimeouts {
+    ready: Duration,
+    action_grace: Duration,
+    exit_grace: Duration,
+}
+
+impl Default for WorkerTimeouts {
+    fn default() -> Self {
+        Self {
+            ready: Duration::from_secs(30),
+            action_grace: Duration::from_secs(30),
+            exit_grace: Duration::from_secs(5),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum LineEvent {
+    Ready,
+    Action,
+    Ignored,
+    Invalid,
+}
+
+struct ChildObservation {
+    postpone_count: usize,
+    display: Duration,
+    timeouts: WorkerTimeouts,
+    ready: bool,
+    first: Option<(Action, Instant)>,
+    fault: Option<String>,
+    invalid_output: bool,
+    eof: bool,
+    abandoned_output: bool,
+    exit_success: Option<bool>,
+    deadline: Instant,
+    timed_out: bool,
+}
+
+impl ChildObservation {
+    fn new(
+        postpone_count: usize,
+        display: Duration,
+        now: Instant,
+        timeouts: WorkerTimeouts,
+    ) -> Self {
+        Self {
+            postpone_count,
+            display,
+            timeouts,
+            ready: false,
+            first: None,
+            fault: None,
+            invalid_output: false,
+            eof: false,
+            abandoned_output: false,
+            exit_success: None,
+            deadline: now + timeouts.ready,
+            timed_out: false,
+        }
+    }
+
+    fn line(&mut self, line: &str, now: Instant) -> LineEvent {
+        if self.first.is_some() || self.invalid_output {
+            return LineEvent::Ignored;
+        }
+        if now >= self.deadline {
+            self.timed_out = true;
+            self.invalid_output = true;
+            let phase = if self.ready { "action" } else { "READY" };
+            self.fail(format!("overlay timed out waiting for {phase}"));
+            return LineEvent::Invalid;
+        }
+        if !self.ready {
+            if line != "READY\n" {
+                self.invalid_output = true;
+                self.fail("overlay did not report READY".into());
+                return LineEvent::Invalid;
+            }
+            self.ready = true;
+            self.timed_out = false;
+            self.deadline = now + self.display + self.timeouts.action_grace;
+            return LineEvent::Ready;
+        }
+        match Action::parse_line(line, self.postpone_count) {
+            Ok(action) => {
+                self.first = Some((action, now));
+                self.timed_out = false;
+                self.deadline = now + self.timeouts.exit_grace;
+                LineEvent::Action
+            }
+            Err(error) => {
+                self.invalid_output = true;
+                self.fail(format!("invalid overlay output: {error}"));
+                LineEvent::Invalid
+            }
+        }
+    }
+
+    fn fail(&mut self, error: String) {
+        if self.fault.is_none() {
+            self.fault = Some(error);
+        }
+    }
+
+    fn eof(&mut self) {
+        self.eof = true;
+    }
+
+    fn abandon_output(&mut self) {
+        self.abandoned_output = true;
+        self.fail("overlay stdout remained open after process exit".into());
+    }
+
+    fn exited(&mut self, success: bool) {
+        self.exit_success = Some(success);
+    }
+
+    fn outcome(&self) -> Option<Result<(Action, Instant), String>> {
+        if !(self.eof || self.abandoned_output) || self.exit_success.is_none() {
+            return None;
+        }
+        Some(match self.first {
+            Some(action) => Ok(action),
+            None => Err(self
+                .fault
+                .clone()
+                .unwrap_or_else(|| match self.exit_success {
+                    Some(false) => "overlay process failed without an action".into(),
+                    _ if !self.ready => "overlay closed before READY".into(),
+                    _ => "overlay closed without an action".into(),
+                })),
+        })
+    }
+
+    fn timeout(&mut self, now: Instant) -> bool {
+        if self.timed_out || now < self.deadline {
+            return false;
+        }
+        self.timed_out = true;
+        if self.first.is_none() {
+            let phase = if self.ready { "action" } else { "READY" };
+            self.fail(format!("overlay timed out waiting for {phase}"));
+        }
+        true
+    }
+}
+
+enum PipeEvent {
+    Line(String, Instant),
+    ReadError(String),
+    Eof,
+    WriteError(String),
+}
+
+const MAX_PROTOCOL_LINES: usize = 16;
+
+fn read_stdout(stdout: ChildStdout, events: Sender<PipeEvent>) {
+    let mut stdout = BufReader::new(stdout);
+    let mut lines = 0;
+    loop {
+        if lines == MAX_PROTOCOL_LINES {
+            let _ = events.send(PipeEvent::ReadError(
+                "overlay sent too many protocol lines".into(),
+            ));
+            break;
+        }
+        match read_line(&mut stdout) {
+            Ok(Some(line)) => {
+                lines += 1;
+                if events.send(PipeEvent::Line(line, Instant::now())).is_err() {
+                    return;
+                }
+            }
+            Ok(None) => break,
+            Err(error) => {
+                let _ = events.send(PipeEvent::ReadError(error));
+                break;
+            }
+        }
+    }
+    let _ = events.send(PipeEvent::Eof);
+}
+
+fn write_stdin(
+    mut stdin: ChildStdin,
+    snapshot: Snapshot,
+    start: Receiver<()>,
+    events: Sender<PipeEvent>,
+) {
+    let write = (|| {
+        protocol::write_snapshot(&mut stdin, &snapshot)?;
+        if start.recv().is_err() {
+            return Ok(());
+        }
+        stdin.write_all(b"START\n")?;
+        stdin.flush()
+    })();
+    if let Err(error) = write {
+        let _ = events.send(PipeEvent::WriteError(error.to_string()));
+    }
 }
 
 fn run_child(
     executable: &Path,
     id: u64,
     snapshot: &Snapshot,
-    proxy: &EventLoopProxy<AppEvent>,
     start: Receiver<()>,
-) -> Result<Action, String> {
+    timeouts: WorkerTimeouts,
+    mut on_ready: impl FnMut() -> Result<(), String>,
+) -> Result<(Action, Instant), String> {
     let mut child = Command::new(executable)
         .arg("--overlay")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
         .map_err(|error| format!("cannot launch overlay: {error}"))?;
-    let result = (|| {
-        let mut stdin = child.stdin.take().ok_or("overlay stdin is unavailable")?;
-        let stdout = child.stdout.take().ok_or("overlay stdout is unavailable")?;
-        let mut stdout = BufReader::new(stdout);
-        protocol::write_snapshot(&mut stdin, snapshot).map_err(|error| error.to_string())?;
-        if read_line(&mut stdout)? != "READY\n" {
-            return Err("overlay did not report READY".into());
+    let stdin = child.stdin.take().expect("piped child stdin");
+    let stdout = child.stdout.take().expect("piped child stdout");
+    let (events, received) = mpsc::channel();
+    thread::spawn({
+        let events = events.clone();
+        move || read_stdout(stdout, events)
+    });
+    thread::spawn({
+        let events = events.clone();
+        let snapshot = snapshot.clone();
+        move || write_stdin(stdin, snapshot, start, events)
+    });
+    drop(events);
+
+    let mut observed = ChildObservation::new(
+        snapshot.postpone_minutes.len(),
+        Duration::from_secs(u64::from(snapshot.duration_seconds)),
+        Instant::now(),
+        timeouts,
+    );
+    let mut exited_at = None;
+    let mut post_exit_drained = 0;
+    loop {
+        if observed.exit_success.is_none() {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    if !status.success() {
+                        eprintln!("overlay {id} exited with {status}");
+                    }
+                    observed.exited(status.success());
+                    exited_at = Some(Instant::now());
+                }
+                Ok(None) => {}
+                Err(error) => observed.fail(format!("cannot inspect overlay process: {error}")),
+            }
         }
-        proxy
-            .send_event(AppEvent::Ready(id))
-            .map_err(|_| "parent event loop closed".to_owned())?;
-        start
-            .recv()
-            .map_err(|_| "parent closed before START".to_owned())?;
-        stdin
-            .write_all(b"START\n")
-            .map_err(|error| error.to_string())?;
-        stdin.flush().map_err(|error| error.to_string())?;
-        drop(stdin);
-        let action = Action::parse_line(&read_line(&mut stdout)?, snapshot.postpone_minutes.len())?;
-        io::copy(&mut stdout, &mut io::sink()).map_err(|error| error.to_string())?;
-        Ok(action)
-    })();
-    if result.is_err() {
-        let _ = child.kill();
+        if let Some(result) = observed.outcome() {
+            return result;
+        }
+        if observed.timeout(Instant::now()) {
+            eprintln!(
+                "overlay {id}: {}",
+                observed
+                    .fault
+                    .as_deref()
+                    .unwrap_or("did not exit after its action")
+            );
+            if observed.exit_success.is_none() {
+                let _ = child.kill();
+            }
+        }
+        let wait = if observed.timed_out {
+            Duration::from_millis(50)
+        } else {
+            observed
+                .deadline
+                .saturating_duration_since(Instant::now())
+                .min(Duration::from_millis(50))
+        };
+        if observed.eof {
+            thread::sleep(wait);
+            continue;
+        }
+        let next = if exited_at.is_some_and(|at| Instant::now() >= at + timeouts.exit_grace) {
+            match (post_exit_drained < MAX_PROTOCOL_LINES)
+                .then(|| received.try_recv().ok())
+                .flatten()
+            {
+                Some(event) => {
+                    post_exit_drained += 1;
+                    Ok(event)
+                }
+                None => {
+                    eprintln!("overlay {id}: stdout remained open after process exit");
+                    // ponytail: only a descendant can hold this pipe; its reader thread ends
+                    // when that descendant closes stdout. Use cancellable I/O if children fork.
+                    observed.abandon_output();
+                    continue;
+                }
+            }
+        } else {
+            received.recv_timeout(wait)
+        };
+        match next {
+            Ok(PipeEvent::Line(line, at)) => match observed.line(&line, at) {
+                LineEvent::Ready => {
+                    if let Err(error) = on_ready() {
+                        observed.fail(error);
+                        let _ = child.kill();
+                    }
+                }
+                LineEvent::Invalid => {
+                    let _ = child.kill();
+                }
+                LineEvent::Action | LineEvent::Ignored => {}
+            },
+            Ok(PipeEvent::ReadError(error)) => {
+                observed.fail(error);
+                let _ = child.kill();
+            }
+            Ok(PipeEvent::Eof) => {
+                observed.eof();
+                if observed.first.is_none() && observed.exit_success.is_none() {
+                    let _ = child.kill();
+                }
+            }
+            Ok(PipeEvent::WriteError(error)) => {
+                observed.fail(format!("cannot write to overlay: {error}"));
+                let _ = child.kill();
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                observed.fail("overlay pipes disconnected unexpectedly".into());
+                observed.eof();
+                let _ = child.kill();
+            }
+        }
     }
-    let status = child.wait().map_err(|error| error.to_string())?;
-    if !status.success() {
-        eprintln!("overlay {id} exited with {status}");
-    }
-    result
 }
 
 pub fn run(config_path: &Path) -> Result<(), String> {
@@ -307,13 +624,14 @@ mod tests {
         timing::Tick,
     };
 
-    use super::{AppState, read_line};
+    use super::{AppState, ChildObservation, LineEvent, WorkerTimeouts, read_line, run_child};
 
     #[test]
     fn protocol_lines_are_bounded_and_newline_delimited() {
         let mut input = Cursor::new(b"READY\nSKIP\n");
-        assert_eq!(read_line(&mut input).unwrap(), "READY\n");
-        assert_eq!(read_line(&mut input).unwrap(), "SKIP\n");
+        assert_eq!(read_line(&mut input).unwrap().as_deref(), Some("READY\n"));
+        assert_eq!(read_line(&mut input).unwrap().as_deref(), Some("SKIP\n"));
+        assert_eq!(read_line(&mut input).unwrap(), None);
         assert!(read_line(&mut Cursor::new(b"READY")).is_err());
         assert!(read_line(&mut Cursor::new(vec![b'x'; 128])).is_err());
     }
@@ -334,7 +652,11 @@ mod tests {
 
         assert!(app.ready(id, start + Duration::from_secs(63)));
         assert_eq!(receiver.try_recv(), Ok(()));
-        assert!(app.finish(id, Ok(Action::Postpone(1)), start + Duration::from_secs(65)));
+        assert!(app.finish(
+            id,
+            Ok((Action::Postpone(1), start + Duration::from_secs(65))),
+            start + Duration::from_secs(70),
+        ));
         assert_eq!(app.timer.deadline(), Some(start + Duration::from_secs(965)));
     }
 
@@ -358,11 +680,276 @@ mod tests {
             app.begin(id, snapshot, sender);
             assert!(app.ready(id, start + Duration::from_secs(ready)));
             assert_eq!(receiver.try_recv(), Ok(()));
-            assert!(app.finish(id, Ok(action), start + Duration::from_secs(action_at)));
+            assert!(app.finish(
+                id,
+                Ok((action, start + Duration::from_secs(action_at))),
+                start + Duration::from_secs(action_at),
+            ));
             assert_eq!(
                 app.timer.deadline(),
                 Some(start + Duration::from_secs(next_due))
             );
         }
+    }
+
+    #[test]
+    fn exit_before_buffered_action_waits_for_eof_and_preserves_first_choice() {
+        let at = Instant::now();
+        let mut child =
+            ChildObservation::new(2, Duration::from_secs(30), at, WorkerTimeouts::default());
+        child.exited(true);
+        assert!(child.outcome().is_none());
+        assert_eq!(child.line("READY\n", at), LineEvent::Ready);
+        assert_eq!(child.line("POSTPONE 1\n", at), LineEvent::Action);
+        assert_eq!(child.line("SKIP\n", at), LineEvent::Ignored);
+        assert!(child.outcome().is_none());
+        child.eof();
+        assert_eq!(child.outcome(), Some(Ok((Action::Postpone(1), at))));
+    }
+
+    #[test]
+    fn early_elapsed_falls_back_once_and_stale_events_do_not_move_deadline() {
+        let mut config = config::load("assets/default-config.yaml".as_ref()).unwrap();
+        config.interval = Duration::from_secs(60);
+        config.display = Duration::from_secs(30);
+        let start = Instant::now();
+        let mut app = AppState::new(config, start);
+        let Some(Tick::LaunchOverlay(id)) = app.timer.tick(start + Duration::from_secs(60)) else {
+            panic!("break was not due");
+        };
+        let (sender, _receiver) = mpsc::channel();
+        app.begin(id, Snapshot::from_config(&app.config), sender);
+        assert!(app.ready(id, start + Duration::from_secs(61)));
+        assert!(app.finish(
+            id,
+            Ok((Action::Elapsed, start + Duration::from_secs(62))),
+            start + Duration::from_secs(63),
+        ));
+        assert_eq!(app.timer.deadline(), Some(start + Duration::from_secs(123)));
+        assert!(!app.finish(
+            id,
+            Ok((Action::Postpone(0), start + Duration::from_secs(64))),
+            start + Duration::from_secs(65),
+        ));
+        assert!(!app.ready(id, start + Duration::from_secs(66)));
+        assert_eq!(app.timer.deadline(), Some(start + Duration::from_secs(123)));
+    }
+
+    #[test]
+    fn missing_ready_and_malformed_output_resolve_after_eof_and_exit() {
+        let at = Instant::now();
+        let mut child =
+            ChildObservation::new(2, Duration::from_secs(30), at, WorkerTimeouts::default());
+        assert_eq!(child.line("SKIP\n", at), LineEvent::Invalid);
+        child.eof();
+        assert!(child.outcome().is_none());
+        child.exited(true);
+        assert!(child.outcome().unwrap().is_err());
+
+        let mut child =
+            ChildObservation::new(2, Duration::from_secs(30), at, WorkerTimeouts::default());
+        assert_eq!(child.line("READY\n", at), LineEvent::Ready);
+        assert_eq!(child.line("POSTPONE 9\n", at), LineEvent::Invalid);
+        child.eof();
+        child.exited(true);
+        assert!(child.outcome().unwrap().is_err());
+
+        let mut child =
+            ChildObservation::new(2, Duration::from_secs(30), at, WorkerTimeouts::default());
+        assert_eq!(child.line("READY\n", at), LineEvent::Ready);
+        child.eof();
+        child.exited(true);
+        assert_eq!(
+            child.outcome(),
+            Some(Err("overlay closed without an action".into()))
+        );
+
+        let mut child =
+            ChildObservation::new(2, Duration::from_secs(30), at, WorkerTimeouts::default());
+        assert_eq!(child.line("READY\n", at), LineEvent::Ready);
+        child.eof();
+        child.exited(false);
+        assert_eq!(
+            child.outcome(),
+            Some(Err("overlay process failed without an action".into()))
+        );
+    }
+
+    #[test]
+    fn missing_ready_action_and_post_action_timeouts_are_bounded() {
+        let at = Instant::now();
+        let timeouts = WorkerTimeouts {
+            ready: Duration::from_secs(2),
+            action_grace: Duration::from_secs(5),
+            exit_grace: Duration::from_secs(3),
+        };
+        let mut missing_ready = ChildObservation::new(2, Duration::from_secs(30), at, timeouts);
+        assert!(!missing_ready.timeout(at + Duration::from_secs(1)));
+        assert!(missing_ready.timeout(at + Duration::from_secs(2)));
+        assert!(!missing_ready.timeout(at + Duration::from_secs(3)));
+        missing_ready.eof();
+        missing_ready.exited(false);
+        assert!(missing_ready.outcome().unwrap().is_err());
+
+        let mut no_action = ChildObservation::new(2, Duration::from_secs(30), at, timeouts);
+        assert_eq!(no_action.line("READY\n", at), LineEvent::Ready);
+        assert!(!no_action.timeout(at + Duration::from_secs(34)));
+        assert!(no_action.timeout(at + Duration::from_secs(35)));
+
+        let mut no_exit = ChildObservation::new(2, Duration::from_secs(30), at, timeouts);
+        assert_eq!(no_exit.line("READY\n", at), LineEvent::Ready);
+        assert_eq!(no_exit.line("SKIP\n", at), LineEvent::Action);
+        assert!(!no_exit.timeout(at + Duration::from_secs(2)));
+        assert!(no_exit.timeout(at + Duration::from_secs(3)));
+        no_exit.eof();
+        no_exit.exited(false);
+        assert_eq!(no_exit.outcome(), Some(Ok((Action::Skip, at))));
+    }
+
+    #[test]
+    fn late_action_is_rejected_but_predeadline_buffered_action_wins() {
+        let at = Instant::now();
+        let timeouts = WorkerTimeouts {
+            ready: Duration::from_secs(2),
+            action_grace: Duration::from_secs(5),
+            exit_grace: Duration::from_secs(3),
+        };
+        let mut late = ChildObservation::new(2, Duration::from_secs(30), at, timeouts);
+        assert_eq!(late.line("READY\n", at), LineEvent::Ready);
+        assert_eq!(
+            late.line("SKIP\n", at + Duration::from_secs(35)),
+            LineEvent::Invalid
+        );
+        late.eof();
+        late.exited(true);
+        assert!(late.outcome().unwrap().is_err());
+
+        let mut buffered = ChildObservation::new(2, Duration::from_secs(30), at, timeouts);
+        assert_eq!(buffered.line("READY\n", at), LineEvent::Ready);
+        assert!(buffered.timeout(at + Duration::from_secs(35)));
+        assert_eq!(
+            buffered.line("POSTPONE 1\n", at + Duration::from_secs(34)),
+            LineEvent::Action
+        );
+        buffered.eof();
+        buffered.exited(false);
+        assert_eq!(
+            buffered.outcome(),
+            Some(Ok((Action::Postpone(1), at + Duration::from_secs(34))))
+        );
+    }
+
+    #[test]
+    fn spawn_failure_schedules_one_full_interval() {
+        let mut config = config::load("assets/default-config.yaml".as_ref()).unwrap();
+        config.interval = Duration::from_secs(60);
+        let start = Instant::now();
+        let mut app = AppState::new(config, start);
+        let Some(Tick::LaunchOverlay(id)) = app.timer.tick(start + Duration::from_secs(60)) else {
+            panic!("break was not due");
+        };
+        let (sender, _receiver) = mpsc::channel();
+        app.begin(id, Snapshot::from_config(&app.config), sender);
+        assert!(app.finish(
+            id,
+            Err("cannot launch overlay".into()),
+            start + Duration::from_secs(61)
+        ));
+        assert_eq!(app.timer.deadline(), Some(start + Duration::from_secs(121)));
+        assert_eq!(app.timer.tick(start + Duration::from_secs(62)), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fake_child_failures_are_bounded_and_reaped() {
+        use std::{
+            fs,
+            os::unix::fs::PermissionsExt,
+            time::{SystemTime, UNIX_EPOCH},
+        };
+
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "break-reminder-hung-child-{}-{suffix}",
+            std::process::id()
+        ));
+        fs::write(&path, "#!/bin/sh\nprintf 'BROKEN\\n'\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        let snapshot =
+            Snapshot::from_config(&config::load("assets/default-config.yaml".as_ref()).unwrap());
+        let (start, receiver) = mpsc::channel();
+        drop(start);
+        assert!(
+            run_child(
+                &path,
+                1,
+                &snapshot,
+                receiver,
+                WorkerTimeouts::default(),
+                || Ok(()),
+            )
+            .is_err()
+        );
+
+        fs::write(
+            &path,
+            "#!/bin/sh\nprintf 'READY\\nPOSTPONE 1\\n'\ni=0\nwhile [ \"$i\" -lt 1000 ]; do printf 'SKIP\\n'; i=$((i+1)); done\n",
+        )
+        .unwrap();
+        let (start, receiver) = mpsc::channel();
+        let outcome = run_child(
+            &path,
+            1,
+            &snapshot,
+            receiver,
+            WorkerTimeouts::default(),
+            || start.send(()).map_err(|error| error.to_string()),
+        );
+        assert!(matches!(outcome, Ok((Action::Postpone(1), _))));
+
+        fs::write(&path, "#!/bin/sh\nexec /bin/sleep 5\n").unwrap();
+        let (start, receiver) = mpsc::channel();
+        drop(start);
+        let begin = Instant::now();
+        let outcome = run_child(
+            &path,
+            1,
+            &snapshot,
+            receiver,
+            WorkerTimeouts {
+                ready: Duration::from_millis(200),
+                action_grace: Duration::from_millis(200),
+                exit_grace: Duration::from_millis(200),
+            },
+            || Ok(()),
+        );
+        assert!(outcome.unwrap_err().contains("READY"));
+        assert!(begin.elapsed() < Duration::from_secs(3));
+
+        fs::write(
+            &path,
+            "#!/bin/sh\nprintf 'READY\\n'\n/bin/sleep 3 &\n/bin/sleep 1\n",
+        )
+        .unwrap();
+        let (start, receiver) = mpsc::channel();
+        let begin = Instant::now();
+        let outcome = run_child(
+            &path,
+            2,
+            &snapshot,
+            receiver,
+            WorkerTimeouts {
+                ready: Duration::from_secs(2),
+                action_grace: Duration::from_secs(5),
+                exit_grace: Duration::from_millis(200),
+            },
+            || start.send(()).map_err(|error| error.to_string()),
+        );
+        fs::remove_file(&path).unwrap();
+        assert!(outcome.unwrap_err().contains("stdout remained open"));
+        assert!(begin.elapsed() < Duration::from_secs(2));
     }
 }

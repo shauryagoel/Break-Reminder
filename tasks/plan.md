@@ -63,7 +63,7 @@ bounded child snapshot and one-screen overlay
 |---|---|---|
 | AeroSpace tiles or moves the overlay, or eframe flashes a small root window | Break does not cover the active screen | Test the native frame and accessory/borderless window behavior in Tasks 1–2 before building the full UI; document a precise floating rule only if needed |
 | eframe child viewport lacks a public winit handle | Other monitors remain incorrectly sized | Match unique titles in `NSApplication.windows()` before showing children; test every attached monitor; switch to one process per monitor only if that runtime probe fails |
-| A child action, buffered stdout, and exit arrive in different orders | Postpone is lost or a break is scheduled twice | Task 4 latches one child action, orders stdout/EOF, waits for exit or forces close, and tests the event orders |
+| A child action, buffered stdout, and exit arrive in different orders | Postpone is lost or a break is scheduled twice | Task 4 latches one child action, orders stdout/EOF, waits for exit or forces close, and tests the event orders; a bounded drain grace handles inherited stdout after the direct child exits |
 | No Linux/X11 host is available on the current Mac | X11 behavior cannot be proven locally | Keep X11-only code behind platform checks, document native build prerequisites and executable Linux commands; report build/runtime verification separately |
 | Large or corrupt local image exhausts the child or hides controls | Break is missed | Bound file bytes and decoded dimensions; decode once, render the no-image layout on error |
 

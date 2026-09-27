@@ -7,13 +7,13 @@
 **Acceptance criteria:**
 
 - [x] The snapshot parser rejects an oversized, truncated, or malformed frame; terminal lines reject unknown actions and out-of-range Postpone indices. Tests cover framing and one-action latching.
-- [ ] A direct Mac overlay run shows a clickable ordinary borderless window, starts the countdown only after READY/START, and exits after one outcome. `--check-config` still opens no UI.
+- [x] A direct Mac overlay run shows a clickable ordinary borderless window, starts the countdown only after READY/START, and exits after one outcome. `--check-config` still opens no UI.
 - [x] The dependency set uses Rust 1.95, eframe `glow`/X11/AccessKit without default `wgpu`, and a private mode that never creates the parent tray. Document that transitive dependencies still include Wayland code.
 
 **Verification:**
 
 - [x] Write failing protocol/state tests before implementation; run `cargo test --all-targets`, formatting, Clippy, and release build.
-- [ ] Drive the private child through a local pipe and inspect its window/action on the Mac.
+- [x] Drive the private child through a local pipe and inspect its window/action on the Mac. The packaged child returned `POSTPONE 0` after the user's 10-minute click and `SKIP` after a Skip click.
 
 **Dependencies:** Completed `configuration` and `reminder-timing` modules.
 
@@ -28,7 +28,7 @@
 **Acceptance criteria:**
 
 - [ ] Every monitor connected at reminder start gets a borderless covering window and all windows close on one action; READY follows creation, sizing, showing, and paint for all targets.
-- [ ] On the Mac, the overlay covers menu bar/Dock space without a native fullscreen Space, remains clickable, and does not tile under AeroSpace. A specific floating-rule fallback is documented if native settings fail.
+- [ ] On the current Mac display, the overlay covers menu bar/Dock space, remains clickable, and stays floating under AeroSpace. A specific floating-rule fallback is documented if native settings fail. Native fullscreen Space behavior still needs a workspace-switch check.
 - [ ] Disconnecting a monitor during a break does not strand the remaining windows or timer; a newly connected monitor is included at the next break.
 - [x] X11 geometry accounts for monitor origins and scale factors, including a correction pass using each child's actual scale; the code avoids eframe `with_monitor`. X11 runtime remains provisional until tested in a real session.
 
@@ -37,7 +37,7 @@
 - [x] Run focused geometry tests, full Mac tests (25 pass), formatting, Clippy, and release bundle build.
 - [ ] Inspect the packaged Mac overlay on every attached monitor, including focus, first click, window flash, and AeroSpace classification; unplug an external monitor mid-break when available. The Mac currently has only one display; live desktop inspection was rejected by automatic approval review despite explicit user approval.
 
-**Process checks:** The packaged overlay emitted `READY`, accepted `START`, then emitted `ELAPSED` and exited successfully. During a visible reminder, `aerospace list-windows --monitor all --pid <overlay pid> --json` returned `[]`, so AeroSpace did not list it as a managed window. The installed Homebrew Rust compiler lacks the Linux target standard library; the Rustup toolchain that has the target is older than this package's Rust 1.95 minimum. Linux compilation still needs a suitable host/toolchain.
+**Mac checks:** The packaged overlay emitted `READY`, accepted `START`, then emitted `ELAPSED` and exited successfully. During a visible reminder, `aerospace list-windows --monitor all --pid <overlay pid> --json` returned `[]`, so AeroSpace did not list it as a managed window. In a separate 20-second packaged preview, the user confirmed that it covered the current display, including the menu bar and Dock, and stayed floating under AeroSpace. Follow-up previews returned `POSTPONE 0` and `SKIP` after the user's clicks. External-monitor coverage and workspace switching remain open. The installed Homebrew Rust compiler lacks the Linux target standard library; the Rustup toolchain that has the target is older than this package's Rust 1.95 minimum. Linux compilation still needs a suitable host/toolchain.
 
 **AeroSpace fallback if a window is tiled:** Add the rule below after a broad `layout tiling` callback that uses `check-further-callbacks = true` (as in the current local AeroSpace config), then reload AeroSpace. The bundle ID comes from `scripts/package-macos.sh`; this rule is documented, not installed.
 
@@ -87,15 +87,17 @@ run = 'layout floating'
 
 **Acceptance criteria:**
 
-- [ ] Spawn failure, missing READY, malformed output, child close without action, and early Elapsed before any accepted action yield one full-interval fallback and a diagnostic; no failure causes an immediate relaunch loop.
-- [ ] Duplicate or stale terminal lines after an accepted action are ignored without changing that action's deadline.
-- [ ] A valid action buffered before process exit wins even if exit notification arrives first; the parent waits for stdout EOF before using Closed/Failed.
-- [ ] An unresponsive child is terminated without blocking the event loop, and a future reminder cannot overlap an unreaped child.
+- [x] Spawn failure, missing READY, malformed output, child close without action, and early Elapsed before any accepted action yield one full-interval fallback and a diagnostic; no failure causes an immediate relaunch loop.
+- [x] Duplicate or stale terminal lines after an accepted action are ignored without changing that action's deadline.
+- [x] A valid action buffered before process exit wins even if exit notification arrives first; the parent waits for stdout EOF before using Closed/Failed, with the documented bounded exception for inherited stdout.
+- [x] An unresponsive child is terminated without blocking the event loop, and a future reminder cannot overlap an unreaped child.
 
 **Verification:**
 
-- [ ] Add deterministic tests for event/EOF/exit orders and a fake-child failure path; run full tests, formatting, Clippy, and release build.
+- [x] Add deterministic tests for event/EOF/exit orders and a fake-child failure path; run full tests, formatting, Clippy, and release build.
 - [ ] On the Mac, close or kill a child and confirm the menu stays responsive and the next break is scheduled once.
+
+**Mac process check:** An isolated one-minute parent spawned overlay child PID 1581. Sending SIGTERM to that child left parent PID 99473 alive, produced one failure diagnostic, and did not immediately relaunch; the test cleaned up both processes and its temporary config. Visual menu responsiveness and the next actual due reminder remain to be checked manually.
 
 **Dependencies:** Task 3.
 
