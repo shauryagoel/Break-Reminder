@@ -31,9 +31,9 @@ On first launch, create the directory and sample file only if the file is absent
 
 ## Tech stack
 
-- Rust 2024 edition; minimum Rust version 1.89, as required by [`serde-saphyr` 1.3](https://docs.rs/serde-saphyr/latest/serde_saphyr/).
+- Rust 2024 edition. This module's dependency floor is Rust 1.89 through [`serde-saphyr` 1.3](https://docs.rs/serde-saphyr/latest/serde_saphyr/); the complete app raises the package minimum to 1.95 for `reminder-window`.
 - `serde` 1.x with `derive` for typed fields.
-- `serde-saphyr` 1.3.x with only its `deserialize` feature. Use its [reader API and input budget](https://docs.rs/serde-saphyr/latest/serde_saphyr/fn.from_reader_with_options.html) to enforce the 64 KiB limit, its default duplicate-key rejection, and `reject_unsupported_tags: true`. Apply `#[serde(deny_unknown_fields)]` to every YAML mapping type, including nested appearance and image mappings.
+- `serde-saphyr` 1.3.x with its `deserialize` feature for this module; `reminder-window` may also enable its `serialize` feature for a validated parent-to-child settings snapshot. Use its [reader API and input budget](https://docs.rs/serde-saphyr/latest/serde_saphyr/fn.from_reader_with_options.html) to enforce the 64 KiB limit, its default duplicate-key rejection, and `reject_unsupported_tags: true`. Apply `#[serde(deny_unknown_fields)]` to every YAML mapping type, including nested appearance and image mappings.
 - Rust standard library for paths, file creation, and post-parse validation. No config framework, YAML value tree, or file watcher.
 
 ## Commands
