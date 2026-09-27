@@ -16,8 +16,9 @@ A persistent eframe process would have less process coordination but risks an un
 
 - The interval begins at app start. A reminder stays visible for the configured number of seconds, then closes and starts a fresh interval.
 - Skip closes the reminder and starts a fresh interval. Postpone closes it and sets the next reminder for the selected relative delay. There is one pending reminder at a time.
+- Manual Pause preserves the remaining interval until Resume. System sleep does not consume interval or visible-countdown time on the first-release macOS and X11 targets; awake idle or lock-screen time does count. A successful config reload starts a fresh interval and preserves a manually paused state.
 - The YAML file configures interval, duration, an ordered list of visible postpone delays, title, message, colors, and an optional local image with fit mode. A missing config gets a sample file. Reloading invalid YAML keeps the last valid settings and reports the error in the menu.
-- Every monitor receives a borderless window sized to its full screen frame, including the menu bar and Dock area, with synchronized countdown and controls. The window must not enter a native fullscreen Space. A single click on any monitor dismisses all reminder windows.
+- Every monitor receives a borderless window sized to its full screen frame, including the menu bar and Dock area, with synchronized countdown and controls. Countdown starts when the windows are visible, and the first action dismisses them all; a later process-exit event cannot replace that action. The window must not enter a native fullscreen Space.
 - The default layout has a calm dark background, centered message and optional image, prominent countdown, and clear Skip and postpone controls. It must scale to laptop and external-display sizes without clipping.
 - The menu displays the next break and provides Pause/Resume, Reload Config, Open Config, and Quit.
 
