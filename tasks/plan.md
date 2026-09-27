@@ -1,44 +1,72 @@
-# Implementation Plan: `reminder-timing`
+# Implementation Plan: `reminder-window`
 
 ## Overview
 
-Implement the approved [timing spec](../SPEC-reminder-timing.md) as a pure Rust module. It accepts validated durations from `configuration`, tracks one reminder, and exposes deadlines and state transitions for the later tray/overlay app shell. This plan covers only `reminder-timing` from the [capability map](../CAPABILITY-MAP.md). The completed configuration plan is archived in `tasks/configuration-plan.md`.
+Implement the approved [window spec](../SPEC-reminder-window.md) on top of the completed [configuration](../SPEC-configuration.md) and [timing](../SPEC-reminder-timing.md) modules. Prove the macOS covering window and AeroSpace behavior early, then wire the windowless menu-bar parent to a short-lived overlay child. Finish image/layout work and packaging after the core break flow is live. The completed timing plan is archived in `tasks/reminder-timing-plan.md`.
 
-## Architecture decisions
+## Dependency order and architecture decisions
 
-- Keep one timer state: waiting for a deadline, manually paused with a remaining duration, launching an overlay, or showing a break. A due check moves waiting to launching once; only the first terminal outcome from the overlay child schedules the next deadline. The parent never independently expires a visible break.
-- Pass `Instant` into transitions and calculate remaining time with saturation. Tests advance synthetic instants rather than sleeping. The display countdown begins when all overlay windows are visible, not when the child process starts.
-- Use only Rust `Duration` and `Instant` in this module. The later `reminder-window` module owns `winit` waiting, tray events, overlay process execution, and error presentation.
-- A successful reload changes the interval and resets the waiting or paused remainder; if an overlay is launching or showing, the new interval applies after it ends.
+```text
+bounded child snapshot and one-screen overlay
+  -> multi-monitor native placement and packaged Mac check
+  -> windowless tray parent and first end-to-end break
+  -> child failure and event-order hardening
+  -> menu reload/pause controls
+  -> finished UI and image support
+  -> documentation and platform verification
+```
+
+- Keep `--check-config` intact. Add a private `--overlay` child mode. Its stdin has a length-prefixed settings snapshot and a later `START` line; stdout contains `READY` and at most one terminal action. Parse these with small Rust functions and bound inputs; no general IPC framework.
+- In the child, first build a simple egui overlay and test actual Mac window behavior. Then add one viewport per monitor and macOS-only AppKit frame/level adjustment. Use the native accessory policy and package `LSUIElement=true`; test the installed AeroSpace before relying on a float rule. The X11 branch uses absolute monitor geometry and is explicitly provisional until runtime-tested there.
+- The parent owns `Config`, `Timer`, menu items, and one child invocation. I/O workers forward ready, outcome, EOF, and exit events through a `winit` proxy; the event loop handles timer/menu transitions without waiting on pipes or processes. Keep the launch-time config snapshot so Postpone indices remain stable across a reload.
+- Use the Rust `image` crate only for bounded local PNG/JPEG/WebP decoding. Draw the rest with egui and existing YAML colors; no web UI, Swift UI, extra theme system, or persistent renderer window.
+- Raise package MSRV to 1.95 for eframe 0.36.2. Disable default `wgpu`/Wayland and tray GTK features as specified; use `glow`, X11, AccessKit, and KSNI.
 
 ## Task list
 
-### Phase 1: Due and break completion
+### Phase 1: Overlay feasibility
 
-1. [x] Add a pure timer with due/launch/visible states, countdown calculation, and one-shot completion for timeout, Skip, Postpone, and failed launch.
+1. [ ] Add the private overlay mode, bounded snapshot/control protocol, and a simple one-screen egui reminder that sends READY and one outcome.
+2. [ ] Cover every monitor without native fullscreen, prove macOS frame/level/AeroSpace behavior, and package an early `LSUIElement` app for that check.
 
-### Phase 2: User control and reload
+### Checkpoint: Screen behavior
 
-2. [x] Add Pause/Resume with frozen remainder and the approved reload behavior in every state.
+- [ ] The Mac overlay is clickable, covers each attached display including menu bar/Dock space, and does not appear as an AeroSpace tile or native fullscreen Space. Record any necessary floating-rule fallback.
+- [ ] Protocol parsing tests and the macOS release build pass.
 
-### Checkpoint: Timing complete
+### Phase 2: Running app
 
-- [x] `cargo test --all-targets` passes with deterministic state-transition tests.
-- [x] `cargo fmt --all -- --check` passes.
-- [x] `cargo clippy --all-targets -- -D warnings` passes.
-- [x] `cargo build --release` succeeds on macOS.
-- [x] Every local timing success criterion in `SPEC-reminder-timing.md` passes; app-shell, sleep/wake, and X11 runtime checks remain tracked for `reminder-window`.
+3. [ ] Add the windowless tray/menu process and connect timer due events to a successful overlay child through nonblocking event forwarding.
+4. [ ] Harden child lifecycle, failure recovery, and buffered event ordering.
+5. [ ] Complete Pause/Resume, Next Break, Reload/Open Config, and menu errors.
+
+### Checkpoint: Core flow
+
+- [ ] A short-interval Mac run proves due → all-screen overlay → elapsed/Skip/Postpone → correct next deadline, with no duplicate or overlapping child.
+- [ ] Invalid reload retains settings; valid reload and manual Pause follow the approved timer spec. Sleep/wake preserves the remaining interval and display countdown.
+
+### Phase 3: Finish
+
+6. [ ] Finish the responsive overlay layout, keyboard actions, and bounded optional image with contain/cover and fallback.
+7. [ ] Finalize the macOS app bundle, README, AeroSpace/X11 instructions, and available platform checks.
+
+### Checkpoint: Window module complete
+
+- [ ] `cargo test --all-targets`, `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo build --release` pass on macOS.
+- [ ] The packaged Mac app passes the screen, tray, image, action, reload, and sleep/wake checks in `SPEC-reminder-window.md`.
+- [ ] Linux/X11 build commands and runtime prerequisites are documented; an actual Linux build is run when a build host or CI runner is available, and X11 runtime is labelled unverified until tested in a session.
+- [ ] Code review finds no unresolved timer/protocol/window correctness issue; user reviews the implemented module.
 
 ## Risks and mitigations
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| A late timer wake queues several overdue breaks | Multiple overlays could launch | One state transition from waiting to launching; test a long late gap |
-| A button click reaches the parent after its display deadline check | Postpone could be lost | Let the overlay child choose its one button or elapsed outcome; the parent applies it once by invocation ID |
-| A child remains open after its outcome | Two overlays could overlap | The app shell confirms or forces child closure before another launch |
-| Launch time consumes the display duration | Break is shorter than configured | Start countdown only after all windows are visible; test the timing calculation |
-| Rust changes `Instant` suspend behavior | Sleep could consume the remaining time | Verify a real macOS sleep/wake cycle during window integration; pin or replace the clock if that check fails |
+| AeroSpace tiles or moves the overlay, or eframe flashes a small root window | Break does not cover the active screen | Test the native frame and accessory/no-close-button behavior in Tasks 1–2 before building the full UI; document a precise floating rule only if needed |
+| eframe child viewport lacks a public winit handle | Other monitors remain incorrectly sized | Match unique titles in `NSApplication.windows()` before showing children; test every attached monitor; switch to one process per monitor only if that runtime probe fails |
+| A child action, buffered stdout, and exit arrive in different orders | Postpone is lost or a break is scheduled twice | Task 4 latches one child action, orders stdout/EOF, waits for exit or forces close, and tests the event orders |
+| No Linux/X11 host is available on the current Mac | X11 behavior cannot be proven locally | Keep X11-only code behind platform checks, document native build prerequisites and executable Linux commands; report build/runtime verification separately |
+| Large or corrupt local image exhausts the child or hides controls | Break is missed | Bound file bytes and decoded dimensions; decode once, render the no-image layout on error |
 
 ## Open questions
 
-None for the pure timer. The real overlay-ready signal is part of the later window integration.
+None about behavior. Native window and Linux build feasibility are explicit verification checkpoints, not silent assumptions.
