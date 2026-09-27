@@ -6,26 +6,195 @@ use std::{
 };
 
 use eframe::egui::{self, Color32, RichText};
+use winit::window::Window;
 
 use crate::protocol::{self, Action, Output, Snapshot};
+
+#[derive(Clone, Copy)]
+struct Screen {
+    #[cfg(target_os = "linux")]
+    position: [f32; 2],
+    size: [f32; 2],
+    #[cfg(target_os = "macos")]
+    frame: objc2_foundation::NSRect,
+    #[cfg(target_os = "linux")]
+    physical_position: (i32, i32),
+    #[cfg(target_os = "linux")]
+    physical_size: (u32, u32),
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn physical_to_logical(origin: (i32, i32), size: (u32, u32), scale: f64) -> ([f32; 2], [f32; 2]) {
+    (
+        [
+            origin.0 as f32 / scale as f32,
+            origin.1 as f32 / scale as f32,
+        ],
+        [size.0 as f32 / scale as f32, size.1 as f32 / scale as f32],
+    )
+}
+
+fn screens(root: &Window) -> Result<Vec<Screen>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = root;
+        crate::macos_window::screens().map(|frames| {
+            frames
+                .into_iter()
+                .map(|frame| Screen {
+                    size: [frame.size.width as f32, frame.size.height as f32],
+                    frame,
+                })
+                .collect()
+        })
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let mut monitors: Vec<_> = root.available_monitors().collect();
+        if let Some(primary) = root.primary_monitor()
+            && let Some(index) = monitors.iter().position(|monitor| *monitor == primary)
+        {
+            monitors.swap(0, index);
+        }
+        if monitors.is_empty() {
+            return Err("no X11 displays are available".into());
+        }
+        Ok(monitors
+            .into_iter()
+            .map(|monitor| {
+                let origin = monitor.position();
+                let size = monitor.size();
+                let physical_position = (origin.x, origin.y);
+                let physical_size = (size.width, size.height);
+                let (position, size) =
+                    physical_to_logical(physical_position, physical_size, monitor.scale_factor());
+                Screen {
+                    position,
+                    size,
+                    physical_position,
+                    physical_size,
+                }
+            })
+            .collect())
+    }
+}
+
+fn place_root(root: &Window, screen: Screen) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        crate::macos_window::configure_root(root, screen.frame)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use winit::dpi::{PhysicalPosition, PhysicalSize};
+        root.request_inner_size(PhysicalSize::new(
+            screen.physical_size.0,
+            screen.physical_size.1,
+        ));
+        root.set_outer_position(PhysicalPosition::new(
+            screen.physical_position.0,
+            screen.physical_position.1,
+        ));
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn root_ready(root: &Window, screen: Screen) -> bool {
+    root.outer_position().is_ok_and(|position| {
+        (position.x, position.y) == screen.physical_position && {
+            let size = root.inner_size();
+            (size.width, size.height) == screen.physical_size
+        }
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn align_child(context: &egui::Context, screen: Screen) -> bool {
+    let pixels_per_point = context.pixels_per_point();
+    let (position, size) = physical_to_logical(
+        screen.physical_position,
+        screen.physical_size,
+        f64::from(pixels_per_point),
+    );
+    let (outer, inner) = context.input(|input| {
+        let viewport = input.viewport();
+        (viewport.outer_rect, viewport.inner_rect)
+    });
+    let near = |actual: f32, expected: f32| ((actual - expected) * pixels_per_point).abs() <= 1.0;
+    let aligned = outer
+        .is_some_and(|rect| near(rect.min.x, position[0]) && near(rect.min.y, position[1]))
+        && inner.is_some_and(|rect| near(rect.width(), size[0]) && near(rect.height(), size[1]));
+    if !aligned {
+        context.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
+            position[0],
+            position[1],
+        )));
+        context.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
+            size[0], size[1],
+        )));
+    }
+    aligned
+}
+
+fn child_title(index: usize) -> String {
+    format!("Break reminder {} screen {index}", std::process::id())
+}
+
+fn base_viewport(size: [f32; 2], title: String) -> egui::ViewportBuilder {
+    egui::ViewportBuilder::default()
+        .with_title(title)
+        .with_inner_size(size)
+        .with_decorations(false)
+        .with_resizable(false)
+        .with_always_on_top()
+}
+
+fn viewport(screen: Screen, title: String) -> egui::ViewportBuilder {
+    let viewport = base_viewport(screen.size, title);
+    #[cfg(target_os = "macos")]
+    {
+        viewport.with_visible(false)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        viewport.with_position(screen.position)
+    }
+}
 
 pub fn run() -> Result<(), String> {
     let mut stdin = io::stdin();
     let snapshot = protocol::read_snapshot(&mut stdin)
         .map_err(|error| format!("invalid overlay settings: {error}"))?;
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("Break reminder")
-            .with_inner_size([900.0, 600.0])
-            .with_decorations(false)
-            .with_resizable(false)
-            .with_always_on_top(),
+    let mut options = eframe::NativeOptions {
+        viewport: base_viewport([900.0, 600.0], "Break reminder".into()),
         ..Default::default()
     };
+    #[cfg(target_os = "macos")]
+    {
+        use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
+        options.event_loop_builder = Some(Box::new(|builder| {
+            builder.with_activation_policy(ActivationPolicy::Accessory);
+            builder.with_default_menu(false);
+        }));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use winit::platform::x11::EventLoopBuilderExtX11;
+        options.event_loop_builder = Some(Box::new(|builder| {
+            builder.with_x11();
+        }));
+    }
     eframe::run_native(
         "break-reminder-overlay",
         options,
         Box::new(move |creation| {
+            let root = creation
+                .winit_window()
+                .ok_or_else(|| io::Error::other("overlay root window is unavailable"))?
+                .clone();
+            let screens = screens(&root).map_err(io::Error::other)?;
+            place_root(&root, screens[0]).map_err(io::Error::other)?;
             let context = creation.egui_ctx.clone();
             let (sender, receiver) = mpsc::channel();
             thread::spawn(move || {
@@ -33,7 +202,7 @@ pub fn run() -> Result<(), String> {
                 let _ = sender.send(result);
                 context.request_repaint();
             });
-            Ok(Box::new(Overlay::new(snapshot, receiver)))
+            Ok(Box::new(Overlay::new(snapshot, receiver, root, screens)))
         }),
     )
     .map_err(|error| format!("cannot open reminder: {error}"))
@@ -44,19 +213,36 @@ struct Overlay {
     start: Receiver<Result<(), String>>,
     deadline: Option<Instant>,
     output: Output<io::Stdout>,
+    root: std::sync::Arc<Window>,
+    screens: Vec<Screen>,
     first_frame: Option<u64>,
+    #[cfg(target_os = "macos")]
+    readiness_retry: bool,
+    #[cfg(target_os = "linux")]
+    readiness_attempts: u8,
     ready: bool,
     finished: bool,
 }
 
 impl Overlay {
-    fn new(snapshot: Snapshot, start: Receiver<Result<(), String>>) -> Self {
+    fn new(
+        snapshot: Snapshot,
+        start: Receiver<Result<(), String>>,
+        root: std::sync::Arc<Window>,
+        screens: Vec<Screen>,
+    ) -> Self {
         Self {
             snapshot,
             start,
             deadline: None,
             output: Output::new(io::stdout()),
+            root,
+            screens,
             first_frame: None,
+            #[cfg(target_os = "macos")]
+            readiness_retry: false,
+            #[cfg(target_os = "linux")]
+            readiness_attempts: 0,
             ready: false,
             finished: false,
         }
@@ -70,7 +256,7 @@ impl Overlay {
         if let Err(error) = self.output.terminal(action) {
             eprintln!("cannot send reminder action: {error}");
         }
-        context.send_viewport_cmd(egui::ViewportCommand::Close);
+        context.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
     }
 
     fn color(hex: &str) -> Color32 {
@@ -80,34 +266,8 @@ impl Overlay {
             u8::from_str_radix(&hex[5..7], 16).expect("validated color"),
         )
     }
-}
 
-impl eframe::App for Overlay {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let context = ui.ctx().clone();
-        if self.ready && self.deadline.is_none() {
-            match self.start.try_recv() {
-                Ok(Ok(())) => {
-                    self.deadline = Some(
-                        Instant::now()
-                            + Duration::from_secs(u64::from(self.snapshot.duration_seconds)),
-                    );
-                }
-                Ok(Err(error)) => {
-                    eprintln!("invalid overlay control: {error}");
-                    context.send_viewport_cmd(egui::ViewportCommand::Close);
-                    return;
-                }
-                Err(TryRecvError::Disconnected) => {
-                    eprintln!("overlay control pipe closed before START");
-                    context.send_viewport_cmd(egui::ViewportCommand::Close);
-                    return;
-                }
-                Err(TryRecvError::Empty) => {}
-            }
-        }
-
-        let now = Instant::now();
+    fn paint(&self, ui: &mut egui::Ui, now: Instant) -> Option<Action> {
         let background = Self::color(&self.snapshot.background_color);
         let foreground = Self::color(&self.snapshot.text_color);
         let accent = Self::color(&self.snapshot.accent_color);
@@ -163,6 +323,77 @@ impl eframe::App for Overlay {
                     });
                 });
             });
+        choice
+    }
+}
+
+impl eframe::App for Overlay {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let context = ui.ctx().clone();
+        if self.ready && self.deadline.is_none() {
+            match self.start.try_recv() {
+                Ok(Ok(())) => {
+                    self.deadline = Some(
+                        Instant::now()
+                            + Duration::from_secs(u64::from(self.snapshot.duration_seconds)),
+                    );
+                }
+                Ok(Err(error)) => {
+                    eprintln!("invalid overlay control: {error}");
+                    context.send_viewport_cmd(egui::ViewportCommand::Close);
+                    return;
+                }
+                Err(TryRecvError::Disconnected) => {
+                    eprintln!("overlay control pipe closed before START");
+                    context.send_viewport_cmd(egui::ViewportCommand::Close);
+                    return;
+                }
+                Err(TryRecvError::Empty) => {}
+            }
+        }
+
+        let now = Instant::now();
+        let mut choice = self.paint(ui, now);
+        let mut children_ready = true;
+        for (index, screen) in self.screens.iter().copied().enumerate().skip(1) {
+            let title = child_title(index);
+            let mut child_error = None;
+            context.show_viewport_immediate(
+                egui::ViewportId::from_hash_of(("break-reminder-screen", index)),
+                viewport(screen, title.clone()),
+                |ui, class| {
+                    if class != egui::ViewportClass::Immediate {
+                        child_error = Some("multi-monitor viewports are unavailable".to_owned());
+                        return;
+                    }
+                    #[cfg(target_os = "macos")]
+                    if let Err(error) = crate::macos_window::configure_child(&title, screen.frame) {
+                        child_error = Some(error);
+                        return;
+                    }
+                    #[cfg(target_os = "linux")]
+                    {
+                        children_ready &= align_child(ui.ctx(), screen);
+                    }
+                    choice = choice.or_else(|| self.paint(ui, now));
+                },
+            );
+            if let Some(error) = child_error {
+                eprintln!("cannot prepare reminder display {index}: {error}");
+                context.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
+                return;
+            }
+            #[cfg(target_os = "macos")]
+            match crate::macos_window::show_child(&title, screen.frame) {
+                Ok(visible) => children_ready &= visible,
+                Err(error) => {
+                    eprintln!("cannot show reminder display {index}: {error}");
+                    context
+                        .send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
+                    return;
+                }
+            }
+        }
 
         if let Some(action) = choice {
             self.finish(action, &context);
@@ -173,13 +404,53 @@ impl eframe::App for Overlay {
             return;
         }
         if self.first_frame.is_none() {
-            self.first_frame = Some(context.cumulative_frame_nr());
+            self.first_frame = Some(context.cumulative_frame_nr_for(egui::ViewportId::ROOT));
             context.request_repaint();
         } else if !self.ready
-            && self
-                .first_frame
-                .is_some_and(|first| context.cumulative_frame_nr() > first)
+            && self.first_frame.is_some_and(|first| {
+                context.cumulative_frame_nr_for(egui::ViewportId::ROOT) > first
+            })
         {
+            #[cfg(target_os = "macos")]
+            if !children_ready
+                || !crate::macos_window::root_ready(&self.root, self.screens[0].frame)
+            {
+                if self.readiness_retry {
+                    eprintln!("reminder windows did not stay visible at their screen frames");
+                    context
+                        .send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
+                    return;
+                }
+                self.readiness_retry = true;
+                if let Err(error) =
+                    crate::macos_window::configure_root(&self.root, self.screens[0].frame)
+                {
+                    eprintln!("cannot reposition reminder root: {error}");
+                    context
+                        .send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
+                    return;
+                }
+                context.request_repaint();
+                return;
+            }
+            #[cfg(target_os = "linux")]
+            if !children_ready || !root_ready(&self.root, self.screens[0]) {
+                if self.readiness_attempts >= 8 {
+                    eprintln!("X11 reminder windows did not stay at their monitor bounds");
+                    context
+                        .send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
+                    return;
+                }
+                self.readiness_attempts += 1;
+                if let Err(error) = place_root(&self.root, self.screens[0]) {
+                    eprintln!("cannot reposition X11 reminder root: {error}");
+                    context
+                        .send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
+                    return;
+                }
+                context.request_repaint_after(Duration::from_millis(50));
+                return;
+            }
             if let Err(error) = self.output.ready() {
                 eprintln!("cannot send reminder readiness: {error}");
                 context.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -197,5 +468,20 @@ impl eframe::App for Overlay {
                     .min(Duration::from_millis(250)),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::physical_to_logical;
+
+    #[test]
+    fn x11_monitor_geometry_preserves_negative_origin_and_scale() {
+        let (position, size) = physical_to_logical((-2400, 900), (2400, 1350), 1.5);
+        assert_eq!(position, [-1600.0, 600.0]);
+        assert_eq!(size, [1600.0, 900.0]);
+        let (position, size) = physical_to_logical((-2400, 900), (2400, 1350), 2.0);
+        assert_eq!(position, [-1200.0, 450.0]);
+        assert_eq!(size, [1200.0, 675.0]);
     }
 }

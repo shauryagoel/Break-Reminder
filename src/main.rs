@@ -1,4 +1,6 @@
 mod config;
+#[cfg(target_os = "macos")]
+mod macos_window;
 mod overlay;
 #[allow(dead_code)] // Snapshot writing and action parsing are used by the tray parent in Task 3.
 mod protocol;

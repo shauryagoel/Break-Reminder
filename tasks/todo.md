@@ -30,12 +30,22 @@
 - [ ] Every monitor connected at reminder start gets a borderless covering window and all windows close on one action; READY follows creation, sizing, showing, and paint for all targets.
 - [ ] On the Mac, the overlay covers menu bar/Dock space without a native fullscreen Space, remains clickable, and does not tile under AeroSpace. A specific floating-rule fallback is documented if native settings fail.
 - [ ] Disconnecting a monitor during a break does not strand the remaining windows or timer; a newly connected monitor is included at the next break.
-- [ ] X11 geometry accounts for monitor origins and scale factors; the code avoids eframe `with_monitor` and keeps X11 runtime status explicitly provisional.
+- [x] X11 geometry accounts for monitor origins and scale factors, including a correction pass using each child's actual scale; the code avoids eframe `with_monitor`. X11 runtime remains provisional until tested in a real session.
 
 **Verification:**
 
-- [ ] Run focused geometry tests, full tests, formatting, Clippy, and release build.
-- [ ] Inspect the packaged Mac overlay on every attached monitor, including focus, first click, window flash, and AeroSpace classification; unplug an external monitor mid-break when available.
+- [x] Run focused geometry tests, full Mac tests (25 pass), formatting, Clippy, and release bundle build.
+- [ ] Inspect the packaged Mac overlay on every attached monitor, including focus, first click, window flash, and AeroSpace classification; unplug an external monitor mid-break when available. The Mac currently has only one display; live desktop inspection was rejected by automatic approval review despite explicit user approval.
+
+**Process checks:** The packaged overlay emitted `READY`, accepted `START`, then emitted `ELAPSED` and exited successfully. During a visible reminder, `aerospace list-windows --monitor all --pid <overlay pid> --json` returned `[]`, so AeroSpace did not list it as a managed window. The installed Homebrew Rust compiler lacks the Linux target standard library; the Rustup toolchain that has the target is older than this package's Rust 1.95 minimum. Linux compilation still needs a suitable host/toolchain.
+
+**AeroSpace fallback if a window is tiled:** Add the rule below after a broad `layout tiling` callback that uses `check-further-callbacks = true` (as in the current local AeroSpace config), then reload AeroSpace. The bundle ID comes from `scripts/package-macos.sh`; this rule is documented, not installed.
+
+```toml
+[[on-window-detected]]
+if = 'test %{app-bundle-id} = com.breakreminder.app'
+run = 'layout floating'
+```
 
 **Dependencies:** Task 1.
 
@@ -45,8 +55,8 @@
 
 ## Checkpoint: Screen behavior
 
-- [ ] Task 2 passes its Mac visual checks or records a concrete fallback before the parent UI is built.
-- [ ] The private overlay protocol and release binary remain green.
+- [x] A concrete AeroSpace floating fallback is recorded above; Mac visual checks remain open.
+- [x] The private overlay protocol and release binary remain green.
 
 ## Task 3: Tray parent and first end-to-end break
 
