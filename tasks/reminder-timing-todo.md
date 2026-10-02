@@ -26,7 +26,7 @@
 **Acceptance criteria:**
 
 - [x] Pause freezes the remaining interval and Resume continues it; both are unavailable during overlay launch/display.
-- [x] Reload resets a waiting timer, updates a paused remainder while staying paused, and applies after an overlay ends in both launching and showing states without changing that overlay's original display duration.
+- [x] Reload preserves a waiting deadline or paused remainder and updates future interval/display settings without changing an overlay's original display duration. Restart Timer uses the latest full interval, preserves a paused state, and is unavailable during overlay launch/display.
 
 **Verification:**
 

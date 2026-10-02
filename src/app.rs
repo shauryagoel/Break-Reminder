@@ -88,6 +88,10 @@ impl AppState {
         Ok(())
     }
 
+    fn restart(&mut self, now: Instant) -> bool {
+        self.active.is_none() && self.timer.restart(now)
+    }
+
     fn status_text(&self, now: Instant) -> String {
         if self.active.is_some() {
             return "Break in progress".into();
@@ -178,6 +182,7 @@ struct App {
 struct TrayMenu {
     status: MenuItem,
     pause: MenuItem,
+    restart: MenuItem,
     note: MenuItem,
 }
 
@@ -185,6 +190,7 @@ impl TrayMenu {
     fn new() -> Result<(Self, Menu), String> {
         let status = MenuItem::with_id("status", "Next break", false, None);
         let pause = MenuItem::with_id("pause", "Pause", true, None);
+        let restart = MenuItem::with_id("restart", "Restart Timer", true, None);
         let reload = MenuItem::with_id("reload", "Reload Config", true, None);
         let open = MenuItem::with_id("open", "Open Config", true, None);
         let note = MenuItem::with_id("note", "Settings loaded", false, None);
@@ -192,6 +198,7 @@ impl TrayMenu {
         let menu = Menu::with_items(&[
             &status,
             &pause,
+            &restart,
             &PredefinedMenuItem::separator(),
             &reload,
             &open,
@@ -204,6 +211,7 @@ impl TrayMenu {
             Self {
                 status,
                 pause,
+                restart,
                 note,
             },
             menu,
@@ -250,8 +258,10 @@ impl App {
             menu.pause.set_text(pause);
         }
         let enabled = !self.quitting && self.state.active.is_none();
-        if menu.pause.is_enabled() != enabled {
-            menu.pause.set_enabled(enabled);
+        for item in [&menu.pause, &menu.restart] {
+            if item.is_enabled() != enabled {
+                item.set_enabled(enabled);
+            }
         }
     }
 
@@ -355,6 +365,9 @@ impl ApplicationHandler<AppEvent> for App {
                 match event.id().0.as_str() {
                     "pause" => {
                         self.state.toggle_pause(Instant::now());
+                    }
+                    "restart" => {
+                        self.state.restart(Instant::now());
                     }
                     "reload" => match self.state.reload(&self.config_path) {
                         Ok(()) => self.feedback("Settings reloaded"),
@@ -924,6 +937,49 @@ mod tests {
             "Break in progress"
         );
         assert!(!app.toggle_pause(start + Duration::from_secs(551)));
+    }
+
+    #[test]
+    fn menu_restart_uses_current_settings_keeps_pause_and_rejects_active_breaks() {
+        let mut config = config::load("assets/default-config.yaml".as_ref()).unwrap();
+        config.interval = Duration::from_secs(120);
+        let start = Instant::now();
+        let mut app = AppState::new(config, start);
+        assert!(app.restart(start + Duration::from_secs(70)));
+        assert_eq!(app.timer.deadline(), Some(start + Duration::from_secs(190)));
+        assert_eq!(
+            app.status_text(start + Duration::from_secs(70)),
+            "Next break in 2 min"
+        );
+        assert_eq!(
+            app.next_status_refresh(start + Duration::from_secs(70)),
+            Some(start + Duration::from_secs(130))
+        );
+
+        assert!(app.toggle_pause(start + Duration::from_secs(80)));
+        app.timer
+            .reload(Duration::from_secs(60), app.config.display);
+        assert!(app.restart(start + Duration::from_secs(90)));
+        assert_eq!(app.status_text(start + Duration::from_secs(90)), "Paused");
+        assert!(app.toggle_pause(start + Duration::from_secs(500)));
+        assert_eq!(app.timer.deadline(), Some(start + Duration::from_secs(560)));
+        let Some(Tick::LaunchOverlay(id)) = app.timer.tick(start + Duration::from_secs(560)) else {
+            panic!("break was not due");
+        };
+        let (sender, _receiver) = mpsc::channel();
+        app.begin(id, Snapshot::from_config(&app.config), sender);
+        assert!(!app.restart(start + Duration::from_secs(561)));
+        assert!(app.ready(id, start + Duration::from_secs(562)));
+        assert!(!app.restart(start + Duration::from_secs(563)));
+        assert_eq!(
+            app.status_text(start + Duration::from_secs(563)),
+            "Break in progress"
+        );
+        assert_eq!(
+            app.timer
+                .display_remaining(start + Duration::from_secs(563)),
+            Some(app.config.display - Duration::from_secs(1))
+        );
     }
 
     #[test]

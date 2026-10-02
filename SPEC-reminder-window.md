@@ -7,8 +7,8 @@ Complete the [break reminder](CAPABILITY-MAP.md) as a Rust desktop app. Between 
 ## User behavior
 
 - Running `break-reminder [--config PATH]` loads the YAML settings, starts the timer, and creates one status icon. The existing `--check-config [--config PATH]` continues to validate and exit without UI. A missing config still gets the sample file.
-- The status menu shows the next break or the current Paused/Break in progress state, plus Pause or Resume, Reload Config, Open Config, and Quit. Its next-break text stays current to the minute without a busy loop. Pause and Resume are disabled during an active reminder. Open Config uses the desktop opener for the resolved file path, without a shell.
-- Reload Config first loads and validates a complete replacement. On success it swaps active settings and calls the approved timer reload transition. On error it leaves the timer/settings untouched and shows a short error in the menu and full detail on stderr. The overlay already open keeps its launch-time image, text, colors, display length, and postpone choices.
+- The status menu shows the next break or the current Paused/Break in progress state, plus Pause or Resume, Restart Timer directly below it, Reload Config, Open Config, and Quit. Its next-break text stays current to the minute without a busy loop. Pause/Resume and Restart Timer are disabled during an active reminder. Restart Timer uses the latest configured full interval and keeps a paused timer paused. Open Config uses the desktop opener for the resolved file path, without a shell.
+- Reload Config first loads and validates a complete replacement. On success it swaps active settings and preserves the current deadline or paused remainder. On error it leaves the timer/settings untouched and shows a short error in the menu and full detail on stderr. The overlay already open keeps its launch-time image, text, colors, display length, and postpone choices.
 - When due, one overlay invocation creates a borderless covering window on each monitor. Each window has the same countdown and controls. The countdown begins after all windows are ready. Skip or any configured Postpone choice on any window dismisses all windows. Natural elapsed duration dismisses them and starts the next full interval. The child emits only its first action; the parent applies it once by invocation ID and never lets a delayed exit overwrite it. A launch failure or close without action starts a full interval and reports the failure.
 - The overlay uses the YAML title, message, background/text/accent colors, optional image, image fit, and ordered Postpone choices. It supports 1–12 visible choices and labels each with its duration. The no-image layout remains complete if no image is configured or decoding fails.
 
@@ -76,7 +76,7 @@ Use `rustfmt`, `snake_case`, explicit duration units, and `Result` for I/O and p
 
 ```rust
 if let Ok(replacement) = config::load(&path) {
-    timer.reload(replacement.interval, replacement.display, Instant::now());
+    timer.reload(replacement.interval, replacement.display);
     config = replacement;
 }
 ```

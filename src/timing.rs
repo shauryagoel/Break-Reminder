@@ -72,6 +72,15 @@ impl Timer {
         self.display = display;
     }
 
+    pub fn restart(&mut self, now: Instant) -> bool {
+        match &mut self.state {
+            State::Waiting(deadline) => *deadline = now + self.interval,
+            State::Paused(remaining) => *remaining = self.interval,
+            State::Launching { .. } | State::Showing { .. } => return false,
+        }
+        true
+    }
+
     pub fn tick(&mut self, now: Instant) -> Option<Tick> {
         match self.state {
             State::Waiting(deadline) if now >= deadline => {
@@ -312,6 +321,44 @@ mod tests {
         assert!(timer.visible(1, start + seconds(242)));
         assert!(!timer.pause(start + seconds(243)));
         assert!(!timer.resume(start + seconds(243)));
+    }
+
+    #[test]
+    fn restart_uses_the_latest_full_interval_and_preserves_pause_and_overlay_ids() {
+        let start = Instant::now();
+        let mut timer = Timer::new(seconds(60), seconds(30), start);
+        assert!(timer.restart(start + seconds(20)));
+        assert_eq!(timer.deadline(), Some(start + seconds(80)));
+        assert_eq!(timer.tick(start + seconds(79)), None);
+
+        assert!(timer.pause(start + seconds(30)));
+        timer.reload(seconds(120), seconds(45));
+        assert!(timer.restart(start + seconds(40)));
+        assert!(timer.is_paused());
+        assert_eq!(timer.deadline(), None);
+        assert_eq!(timer.tick(start + seconds(500)), None);
+        assert!(timer.resume(start + seconds(500)));
+        assert_eq!(timer.deadline(), Some(start + seconds(620)));
+        assert_eq!(
+            timer.tick(start + seconds(620)),
+            Some(Tick::LaunchOverlay(1))
+        );
+
+        assert!(!timer.restart(start + seconds(621)));
+        assert!(timer.visible(1, start + seconds(622)));
+        assert!(!timer.restart(start + seconds(623)));
+        assert_eq!(
+            timer.display_remaining(start + seconds(623)),
+            Some(seconds(44))
+        );
+        assert!(timer.complete(1, Completion::Skip, start + seconds(625)));
+        assert!(timer.restart(start + seconds(630)));
+        assert_eq!(timer.deadline(), Some(start + seconds(750)));
+        assert!(!timer.complete(1, Completion::Closed, start + seconds(631)));
+        assert_eq!(
+            timer.tick(start + seconds(750)),
+            Some(Tick::LaunchOverlay(2))
+        );
     }
 
     #[test]

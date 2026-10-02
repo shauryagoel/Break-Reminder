@@ -9,7 +9,7 @@ Implement the approved [timing spec](../SPEC-reminder-timing.md) as a pure Rust 
 - Keep one timer state: waiting for a deadline, manually paused with a remaining duration, launching an overlay, or showing a break. A due check moves waiting to launching once; only the first terminal outcome from the overlay child schedules the next deadline. The parent never independently expires a visible break.
 - Pass `Instant` into transitions and calculate remaining time with saturation. Tests advance synthetic instants rather than sleeping. The display countdown begins when all overlay windows are visible, not when the child process starts.
 - Use only Rust `Duration` and `Instant` in this module. The later `reminder-window` module owns `winit` waiting, tray events, overlay process execution, and error presentation.
-- A successful reload changes the interval and resets the waiting or paused remainder; if an overlay is launching or showing, the new interval applies after it ends.
+- A successful reload updates future interval/display settings and preserves the waiting deadline or paused remainder; an overlay already launching or showing keeps its original display duration. Restart Timer uses the latest full interval, stays paused if already paused, and is unavailable during launch/display.
 
 ## Task list
 

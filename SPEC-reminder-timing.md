@@ -2,7 +2,7 @@
 
 ## Objective
 
-Schedule one recurring break using the validated durations from [`configuration`](SPEC-configuration.md). The user can let a break end, Skip it, Postpone it by one of the configured delays, or Pause/Resume between breaks. Timing logic is independent of the menu, overlay rendering, and platform window APIs. The approved [capability map](CAPABILITY-MAP.md) makes this module the provider of timer state for `reminder-window`.
+Schedule one recurring break using the validated durations from [`configuration`](SPEC-configuration.md). The user can let a break end, Skip it, Postpone it by one of the configured delays, or Pause/Resume and restart the timer between breaks. Timing logic is independent of the menu, overlay rendering, and platform window APIs. The approved [capability map](CAPABILITY-MAP.md) makes this module the provider of timer state for `reminder-window`.
 
 ## Timing contract
 
@@ -16,12 +16,13 @@ Schedule one recurring break using the validated durations from [`configuration`
 | Postpone is clicked | End the break immediately; the next reminder is due after that choice's relative delay from the click. |
 | Pause is clicked between breaks | Freeze the remaining interval. No reminder appears while paused. |
 | Resume is clicked | Continue with exactly the frozen remaining interval. |
-| Valid config is reloaded | While waiting, start a full new interval from reload. While manually paused, stay paused with the new full interval stored. An overlay already launching or showing keeps its original display duration, then starts the new interval when it ends. |
+| Restart Timer is clicked between breaks | Start a full interval using the latest configured interval. While manually paused, stay paused with the full interval stored until Resume. |
+| Valid config is reloaded | Preserve the waiting deadline, including a postponed deadline, or the paused remainder. An overlay already launching or showing keeps its original display duration. New settings apply to future intervals and overlays, or an explicit timer restart. |
 | Invalid config reload | Keep the current timer and settings unchanged. |
 | Overlay launch fails or closes without an action | Start a full interval and report the error through the app shell; do not immediately relaunch. |
 | App restarts | Start a new full interval; no schedule is persisted. |
 
-The visible countdown reaches zero and never displays a negative value. If a timer wake is late, show only one reminder; there is no queue of missed breaks. The overlay child is the sole authority for ordering its timeout, Skip, and Postpone actions: it emits one terminal outcome. The parent applies that outcome once by invocation ID and ignores a later child exit. It accepts an elapsed outcome only after the overlay is visible and its display deadline has passed. The parent does not independently expire a visible break, because an earlier click could still be in transit. Pause/Resume is unavailable while the overlay is launching or showing.
+The visible countdown reaches zero and never displays a negative value. If a timer wake is late, show only one reminder; there is no queue of missed breaks. The overlay child is the sole authority for ordering its timeout, Skip, and Postpone actions: it emits one terminal outcome. The parent applies that outcome once by invocation ID and ignores a later child exit. It accepts an elapsed outcome only after the overlay is visible and its display deadline has passed. The parent does not independently expire a visible break, because an earlier click could still be in transit. Pause/Resume and Restart Timer are unavailable while the overlay is launching or showing.
 
 On macOS and X11/Linux, system sleep does not consume the remaining interval or an active display countdown. Awake idle time and a locked screen do count. The current [`std::time::Instant` underlying clocks](https://doc.rust-lang.org/std/time/struct.Instant.html) use Darwin uptime and Linux monotonic time; [Apple](https://developer.apple.com/documentation/driverkit/mach_absolute_time) and the [Linux manual](https://man7.org/linux/man-pages/man3/clock_getres.3.html) describe both as excluding suspend. Rust does not guarantee that behavior for all future versions or platforms. A macOS sleep/wake runtime check is required before release.
 
@@ -60,18 +61,18 @@ fn remaining(deadline: Instant, now: Instant) -> Duration {
 
 ## Testing strategy
 
-Use Rust's built-in tests in `src/timing.rs` with supplied `Instant` values. Cover due boundaries, one launch per due event, full interval after the child's elapsed outcome and Skip, relative Postpone, Pause/Resume preserving the remainder, reload in waiting/paused/launching/active states, a countdown that begins only after visibility and clamps to zero, and first-terminal-result-only behavior. Test long elapsed gaps to ensure they never queue multiple reminders. Integration checks in `reminder-window` must verify that invalid config reload leaves the timer untouched, the child emits only one outcome, and child closure is confirmed before another overlay launches. Manually sleep and wake the macOS machine partway through a short interval and during a visible countdown; both must retain their pre-sleep remainder.
+Use Rust's built-in tests in `src/timing.rs` with supplied `Instant` values. Cover due boundaries, one launch per due event, full interval after the child's elapsed outcome and Skip, relative Postpone, Pause/Resume preserving the remainder, reload preserving waiting/postponed deadlines and paused remainders while updating future settings, reload during launch/display preserving the active countdown, restart using the latest full interval while preserving paused state and rejecting active reminders, a countdown that begins only after visibility and clamps to zero, and first-terminal-result-only behavior. Test long elapsed gaps to ensure they never queue multiple reminders. Integration checks in `reminder-window` must verify that invalid config reload leaves the timer untouched, active reminders reject restart, the child emits only one outcome, and child closure is confirmed before another overlay launches. Manually sleep and wake the macOS machine partway through a short interval and during a visible countdown; both must retain their pre-sleep remainder.
 
 ## Boundaries
 
 - **Always:** Derive schedules from validated `Duration` values; use monotonic deadlines; keep tests deterministic; run tests, formatting, Clippy, and release build before marking the module done.
-- **Ask first:** Change Skip/Postpone/Pause/reload semantics, add quiet hours or multiple break types, or persist schedule state across restarts.
+- **Ask first:** Change Skip/Postpone/Pause/reload/restart semantics, add quiet hours or multiple break types, or persist schedule state across restarts.
 - **Never:** Use `SystemTime` for intervals; spin or poll continuously; queue missed reminders; block the UI event loop while waiting for an overlay process.
 
 ## Success criteria
 
 1. Timer transitions match every row in the timing contract, including one launch or active break at a time and one terminal outcome per overlay invocation.
-2. Pause/Resume preserves the remaining interval; a successful reload resets it as specified; invalid reload leaves it unchanged.
+2. Pause/Resume preserves the remaining interval; successful reload preserves the current schedule and updates future settings; invalid reload leaves both unchanged. Restart Timer uses the latest full interval, preserves a paused state, and is unavailable during launch/display.
 3. Display countdown begins only after the overlay is visible, lasts the configured duration, and clamps at zero; late wakes cause no duplicate reminders.
 4. `cargo test --all-targets`, `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo build --release` pass on macOS.
 5. The later app-shell integration and macOS sleep/wake checks prove that real reminders follow the same behavior. X11 runtime verification remains required on an X11 machine.
