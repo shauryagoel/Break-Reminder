@@ -158,11 +158,23 @@ mod tests {
                     if (source.indexOf('ignoring application responses') < 0) throw Error('waited for a background tab');
                     const id = source.match(/tell application id "([^"]+)"/)[1];
                     if (id === 'com.apple.Safari' && source.indexOf('tab id') >= 0) throw Error('Safari tabs have no id');
+                    const activePause = id === 'com.apple.Safari'
+                        ? 'do JavaScript pauseCode in browserTab' : 'execute browserTab javascript pauseCode';
+                    const firstPause = source.indexOf(activePause);
+                    const metadata = source.indexOf('every tab of browserWindow');
+                    if (metadata < 0 || firstPause < 0 || firstPause > metadata)
+                        throw Error('active tabs must pause before bulk metadata');
+                    if (firstPause > source.indexOf('ignoring application responses'))
+                        throw Error('active-tab pause must wait for permission errors');
+                    if (id !== 'com.apple.Safari' && source.indexOf('get id of every tab of browserWindow',
+                        source.indexOf('get URL of every tab of browserWindow')) < 0)
+                        throw Error('Chromium tab ids must be re-read after URLs');
+                    if (music !== 'paused' || movie.rate !== 0) throw Error('native players must pause before browsers');
                     const errors = [];
                     apps[id].windows().forEach(function(win) {{
                         try {{
-                            if (id === 'com.apple.Safari') apps[id].doJavaScript('1', {{in: win.currentTab}});
-                            else win.activeTab.execute({{javascript: '1'}});
+                            if (id === 'com.apple.Safari') apps[id].doJavaScript(options.withParameters[0], {{in: win.currentTab}});
+                            else win.activeTab.execute({{javascript: options.withParameters[0]}});
                         }} catch (error) {{ errors.push(error.message); }}
                         win.tabs().forEach(function(item) {{
                             if (item === unresponsiveTab || !/^(https?|file):/i.test(item.url())) return;

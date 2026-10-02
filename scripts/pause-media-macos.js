@@ -21,14 +21,20 @@ function run() {
         const isSafari = safari.indexOf(id) >= 0;
         const probe = isSafari ? 'do JavaScript "1" in current tab of browserWindow'
             : 'execute (active tab of browserWindow) javascript "1"';
-        const pause = isSafari ? 'do JavaScript pauseCode in browserTab'
-            : 'execute browserTab javascript pauseCode';
-        const tabs = isSafari ? `set browserTabs to get tabs of browserWindow
-                            repeat with browserTab in browserTabs`
+        const active = isSafari ? 'current tab' : 'active tab';
+        const pause = function(tab) {
+            return isSafari ? `do JavaScript pauseCode in ${tab}` : `execute ${tab} javascript pauseCode`;
+        };
+        const backgroundTab = isSafari ? 'tab tabIndex of browserWindow'
+            : '(tab id (item tabIndex of tabIds) of browserWindow)';
+        // Chromium ids are re-read so URLs cannot be paired with tabs that changed mid-scan.
+        // ponytail: Safari tabs have no ids; an index can shift if a tab closes mid-scan.
+        const metadata = isSafari ? 'set pageURLs to get URL of every tab of browserWindow'
             : `set tabIds to get id of every tab of browserWindow
-                            repeat with tabId in tabIds
-                                set browserTab to tab id (contents of tabId) of browserWindow`;
-        // ponytail: check each window's permission, then send without page replies;
+                            set pageURLs to get URL of every tab of browserWindow
+                            if (get id of every tab of browserWindow) is not tabIds then error "tabs changed during scan"`;
+        // ponytail: active tabs check permission; background requests do not wait for replies.
+        // Selected tabs are paused again below; skipping them would cost one more Apple Event per window.
         // per-page execution errors need a browser extension if diagnostics matter.
         const source = `on run argv
             set pauseCode to item 1 of argv
@@ -39,16 +45,28 @@ function run() {
                     set browserWindow to window id (contents of windowId)
                     try
                         with timeout of 2 seconds
-                            try
+                            set browserTab to ${active} of browserWindow
+                            set pageURL to URL of browserTab
+                            if pageURL starts with "http://" or pageURL starts with "https://" or pageURL starts with "file://" then
+                                ${pause('browserTab')}
+                            else
                                 ${probe}
-                            on error message
-                                set end of failures to message
-                            end try
-                            ${tabs}
-                                set pageURL to URL of browserTab
+                            end if
+                        end timeout
+                    on error message
+                        set end of failures to message
+                    end try
+                end repeat
+                repeat with windowId in windowIds
+                    set browserWindow to window id (contents of windowId)
+                    try
+                        with timeout of 2 seconds
+                            ${metadata}
+                            repeat with tabIndex from 1 to count of pageURLs
+                                set pageURL to item tabIndex of pageURLs
                                 if pageURL starts with "http://" or pageURL starts with "https://" or pageURL starts with "file://" then
                                     ignoring application responses
-                                        ${pause}
+                                        ${pause(backgroundTab)}
                                     end ignoring
                                 end if
                             end repeat
@@ -63,6 +81,7 @@ function run() {
         const failures = host.runScript(source, {in: 'AppleScript', withParameters: [javascript]});
         failures.forEach(function(message) { errors.add(id + ': ' + message); });
     }
+    const browsers = [];
     for (let i = 0; i < applications.count; i++) {
         const id = ObjC.unwrap(applications.objectAtIndex(i).bundleIdentifier);
         if (players.indexOf(id) >= 0) {
@@ -77,8 +96,10 @@ function run() {
                 });
             });
         } else if (safari.indexOf(id) >= 0 || chromium.indexOf(id) >= 0) {
-            attempt(id, function() { pauseBrowser(id); });
+            browsers.push(id);
         }
     }
+    // Native players are quick; pause them before browser scans can use up the helper timeout.
+    browsers.forEach(function(id) { attempt(id, function() { pauseBrowser(id); }); });
     if (errors.size) throw new Error(Array.from(errors).join('\n'));
 }
