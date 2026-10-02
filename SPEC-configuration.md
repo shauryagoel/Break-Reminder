@@ -2,7 +2,7 @@
 
 ## Objective
 
-Provide one human-editable YAML file for all first-release break timing and appearance settings. A user can change the reminder interval, display duration, visible postpone choices, title, message, colors, and optional image without recompiling. The module returns validated values to `reminder-timing` and `reminder-window`; it does not own either UI or scheduling.
+Provide one human-editable YAML file for all first-release break timing, media-pause, and appearance settings. A user can change the reminder interval, display duration, visible postpone choices, optional media pause, title, message, colors, and optional image without recompiling. The module returns validated values to `reminder-timing` and `reminder-window`; it does not own either UI or scheduling.
 
 Default path on macOS and X11: `~/.config/break-reminder/config.yaml`. `--config PATH` overrides this path for development and testing; a missing file at either path gets the sample. The approved [capability map](CAPABILITY-MAP.md) defines this module as a dependency of the other two.
 
@@ -14,6 +14,7 @@ The generated sample has these effective defaults:
 interval_minutes: 60
 duration_seconds: 30
 postpone_minutes: [10, 15]
+pause_media: false
 appearance:
   title: "Time for a break"
   message: "Step away from your screen and rest your eyes."
@@ -28,6 +29,8 @@ appearance:
 Any omitted field uses its sample default. Unknown or duplicate keys and unsupported YAML tags are errors, so misspelled settings do not silently disappear. A YAML document is limited to 64 KiB and may not load other files through YAML tags. All durations are integer values. `interval_minutes` and each `postpone_minutes` value must be 1–1440; `duration_seconds` must be 1–3600. The postpone list must contain 1–12 distinct values; order is preserved for button order. Colors use `#RRGGBB`. Title and message must be nonempty after trimming. The optional image path can be absolute, relative to the config directory, or start with `~/`; it is resolved to an absolute path. If an `image` mapping is present, `path` is required and nonempty; `fit` defaults to `contain` and may be `contain` or `cover`. A missing or unreadable image does not invalidate the configuration: `reminder-window` reports the failure and renders its no-image fallback so reminders continue.
 
 On first launch, create the directory and sample file only if the file is absent. Never overwrite an existing file. Parsing or validation errors report the file path and offending field or YAML location. `load` returns a complete validated config or an error; on reload, the caller keeps its previous config if loading fails.
+
+`pause_media` is a boolean, defaulting to `false` even in existing files that omit it. When enabled, the app makes one attempt to pause supported playing media after a break becomes visible. Already-paused media stays paused, and the app does not resume media when the break ends, is skipped, or is postponed. The setting is captured when each break launches; reload affects future breaks. Linux uses `playerctl --all-players pause` for MPRIS players. macOS uses built-in JavaScript for Automation and AppleScript for running Music, iTunes, TV, Spotify, QuickTime Player, Safari, and supported Chromium browsers. Browser JavaScript permission is required; unsupported apps and inaccessible frames cannot be controlled. Browser pause requests do not wait for page replies, so unresponsive background tabs do not block later requests; a bounded preflight reports browser permission errors, but individual page execution errors are unavailable. Media commands run off the UI thread with a bounded timeout. A missing helper, denied permission, or player error is reported without interrupting the break.
 
 ## Tech stack
 

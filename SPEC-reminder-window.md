@@ -10,6 +10,7 @@ Complete the [break reminder](CAPABILITY-MAP.md) as a Rust desktop app. Between 
 - The status menu shows the next break or the current Paused/Break in progress state, plus Pause or Resume, Restart Timer directly below it, Reload Config, Open Config, and Quit. Its next-break text stays current to the minute without a busy loop. Pause/Resume and Restart Timer are disabled during an active reminder. Restart Timer uses the latest configured full interval and keeps a paused timer paused. Open Config uses the desktop opener for the resolved file path, without a shell.
 - Reload Config first loads and validates a complete replacement. On success it swaps active settings and preserves the current deadline or paused remainder. On error it leaves the timer/settings untouched and shows a short error in the menu and full detail on stderr. The overlay already open keeps its launch-time image, text, colors, display length, and postpone choices.
 - When due, one overlay invocation creates a borderless covering window on each monitor. Each window has the same countdown and controls. The countdown begins after all windows are ready. Skip or any configured Postpone choice on any window dismisses all windows. Natural elapsed duration dismisses them and starts the next full interval. The child emits only its first action; the parent applies it once by invocation ID and never lets a delayed exit overwrite it. A launch failure or close without action starts a full interval and reports the failure.
+- With `pause_media: true`, the parent makes one asynchronous attempt to pause supported media after the overlay's readiness signal is accepted and its START acknowledgment is queued. It captures the flag at launch, ignores duplicate/stale readiness signals, and does not pause on a failed launch or while quitting. Pause commands preserve already-paused media. A command failure or ten-second timeout reports an error without affecting scheduling or closing the overlay. Media is not resumed after any break outcome. Platform coverage and permissions are documented in [README.md](README.md).
 - The overlay uses the YAML title, message, background/text/accent colors, optional image, image fit, and ordered Postpone choices. It supports 1–12 visible choices and labels each with its duration. The no-image layout remains complete if no image is configured or decoding fails.
 
 ## Visual and interaction contract
@@ -59,12 +60,14 @@ Normal `cargo run` uses `~/.config/break-reminder/config.yaml`. A short-lived te
 ```text
 src/main.rs            CLI dispatch for check, parent, and private overlay modes
 src/app.rs             Windowless tray app, config reload, timer events, child lifecycle
+src/media.rs           Bounded media commands, called off the parent UI thread
 src/overlay.rs         eframe viewports, rendering, image, and single action latch
 src/macos_window.rs    macOS-only AppKit window frame/level adjustment
 src/config.rs          Existing validated YAML provider
 src/timing.rs          Existing pure timer provider
 assets/               Sample YAML and status/app icon assets if needed
 scripts/              Small macOS app-bundle command
+scripts/pause-media-macos.js  Built-in macOS automation, embedded in the binary
 README.md             Run, configure, AeroSpace fallback, and X11 host requirements
 ```
 

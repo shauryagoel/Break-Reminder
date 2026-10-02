@@ -17,6 +17,7 @@ pub struct Config {
     pub interval: Duration,
     pub display: Duration,
     pub postpone: Vec<Duration>,
+    pub pause_media: bool,
     pub appearance: Appearance,
 }
 
@@ -26,6 +27,7 @@ struct RawConfig {
     interval_minutes: u32,
     duration_seconds: u32,
     postpone_minutes: Vec<u32>,
+    pause_media: bool,
     appearance: Appearance,
 }
 
@@ -35,6 +37,7 @@ impl Default for RawConfig {
             interval_minutes: 60,
             duration_seconds: 30,
             postpone_minutes: vec![10, 15],
+            pause_media: false,
             appearance: Appearance::default(),
         }
     }
@@ -142,6 +145,7 @@ pub fn load(path: &Path) -> Result<Config, ConfigError> {
         serde_saphyr::options! {
             budget: serde_saphyr::budget! { max_reader_input_bytes: Some(64 * 1024), },
             reject_unsupported_tags: true,
+            strict_booleans: true,
         },
     )
     .map_err(|error| ConfigError::new(path, error))?;
@@ -154,6 +158,7 @@ pub fn load(path: &Path) -> Result<Config, ConfigError> {
             .into_iter()
             .map(|minutes| Duration::from_secs(u64::from(minutes) * 60))
             .collect(),
+        pause_media: raw.pause_media,
         appearance: raw.appearance,
     })
 }
@@ -314,6 +319,7 @@ mod tests {
         assert_eq!(sample.interval, minutes(60));
         assert_eq!(sample.display, Duration::from_secs(30));
         assert_eq!(sample.postpone, vec![minutes(10), minutes(15)]);
+        assert!(!sample.pause_media);
         assert_eq!(sample.appearance.title, "Time for a break");
 
         let unique = SystemTime::now()
@@ -337,10 +343,28 @@ mod tests {
         assert_eq!(configured.interval, minutes(25));
         assert_eq!(configured.display, Duration::from_secs(30));
         assert_eq!(configured.postpone, vec![minutes(10), minutes(15)]);
+        assert!(!configured.pause_media);
         assert_eq!(configured.appearance.title, "Stretch");
         assert_eq!(configured.appearance.message, sample.appearance.message);
         assert_eq!(fs::read(&path).unwrap(), partial);
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn pause_media_requires_a_boolean_and_defaults_to_false() {
+        let fixture = Fixture::new();
+        for (yaml, expected) in [
+            ("interval_minutes: 25\n", false),
+            ("pause_media: false\n", false),
+            ("pause_media: true\n", true),
+        ] {
+            fixture.write(yaml);
+            assert_eq!(load(&fixture.path).unwrap().pause_media, expected);
+        }
+        for value in ["maybe", "yes", "1", "null", "[]"] {
+            fixture.rejects(&format!("pause_media: {value}\n"), "pause_media");
+        }
+        fixture.rejects("pause_media: true\npause_media: false\n", "pause_media");
     }
 
     #[test]

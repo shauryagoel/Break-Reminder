@@ -2,6 +2,7 @@ mod app;
 mod config;
 #[cfg(target_os = "macos")]
 mod macos_window;
+mod media;
 mod overlay;
 mod protocol;
 #[allow(dead_code)] // display_remaining remains part of the tested timer contract.

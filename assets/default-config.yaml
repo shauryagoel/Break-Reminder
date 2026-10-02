@@ -1,6 +1,7 @@
 interval_minutes: 60
 duration_seconds: 30
 postpone_minutes: [10, 15]
+pause_media: false # Pause supported media when a break starts; leave it paused afterward.
 appearance:
   title: "Time for a break"
   message: "Step away from your screen and rest your eyes."

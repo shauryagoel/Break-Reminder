@@ -66,6 +66,7 @@ cargo run -- --check-config --config /path/to/config.yaml
 interval_minutes: 60
 duration_seconds: 30
 postpone_minutes: [10, 15]
+pause_media: false
 appearance:
   title: "Time for a break"
   message: "Step away from your screen and rest your eyes."
@@ -81,6 +82,14 @@ Remove the `image` block if you do not want a picture. PNG, JPEG, and WebP are s
 
 During a break, choose **Skip** or a configured **Postpone** button. Tab selects controls, Enter or Space activates the focused control, and Escape skips. The countdown also dismisses the reminder when `duration_seconds` elapses.
 
+Set `pause_media: true` to pause supported media once a reminder becomes visible. The default is `false`, including in existing configs without this field. Choose **Reload Config** after editing; the setting applies to future breaks. Media stays paused after the break ends, is skipped, or is postponed. A media-control failure appears in the menu and on stderr while the reminder continues.
+
+On Linux, install [`playerctl`](https://github.com/altdesktop/playerctl) and make it available in the app's graphical-session `PATH` (for example, `sudo apt install playerctl` on Debian/Ubuntu). The app runs `playerctl --all-players pause` for every available MPRIS player, including browsers exposing YouTube through MPRIS. Players without MPRIS support cannot be controlled; no running players is harmless.
+
+On macOS, the app controls running Music, iTunes, TV, Spotify, and QuickTime Player, plus HTML video/audio in all tabs and windows of Safari, Safari Technology Preview, Chrome, Chromium, Brave, Edge, and Vivaldi. Grant **Automation** access when macOS requests it; permissions can be reviewed in **System Settings → Privacy & Security → Automation**. Browser videos such as YouTube also require **Allow JavaScript from Apple Events**: [Chrome uses View → Developer](https://www.chromium.org/developers/applescript/); [Safari exposes this in its Developer settings](https://developer.apple.com/documentation/safari-developer-tools/developer-settings) after enabling developer features. The app does not change these permissions. Firefox and other unsupported macOS apps, cross-origin embedded frames, and media outside HTML video/audio elements cannot be paused by this integration. Media that starts playing after the initial pause attempt is not polled.
+
+Browser pause requests use Apple Events without waiting for each page's response, so an unresponsive background tab cannot hold up the scan. A bounded permission check reports browser-level errors; individual page execution errors are unavailable because those requests do not wait for replies.
+
 ### AeroSpace
 
 The packaged overlay has covered the tested Mac display without being listed as an AeroSpace tile. If AeroSpace tiles it on your setup, place this rule after any broad tiling rule in your AeroSpace config and reload AeroSpace. An earlier matching rule must set `check-further-callbacks = true` for this rule to run:
@@ -89,6 +98,16 @@ The packaged overlay has covered the tested Mac display without being listed as 
 [[on-window-detected]]
 if = 'test %{app-bundle-id} = com.breakreminder.app'
 run = 'layout floating'
+```
+
+### Vivaldi media-pause troubleshooting on macOS
+
+If Vivaldi reports that executing JavaScript through AppleScript is turned off, enable **Vivaldi Settings → Privacy → Apple Events → Allow JavaScript from Apple Events**. Also ensure Break Reminder can control Vivaldi under **macOS System Settings → Privacy & Security → Automation**. Keep `pause_media: true` in your selected YAML and choose **Reload Config**.
+
+The login-start job saves stderr to `~/Library/Logs/break-reminder.log`. A direct Finder/Spotlight launch can send stderr to `/dev/null`, so it may have no saved log. To capture errors from the installed app, first quit its current instance, then run:
+
+```sh
+"$HOME/Applications/Break Reminder.app/Contents/MacOS/break-reminder" 2>>"$HOME/Library/Logs/break-reminder.log"
 ```
 
 ## Linux/X11
@@ -108,6 +127,8 @@ The tray uses the StatusNotifier protocol; your desktop needs a StatusNotifier w
 
 `./scripts/check-install.sh` checks macOS/Linux installation layouts in temporary homes, including running-app refusal, registration data, settings preservation, repeat install/uninstall, and interrupted macOS replacement rollback. A temporary packaged macOS copy passed native parent launch, duplicate prevention, refusal to uninstall while running, and restart after process exit. Login-job loading, logout/reboot startup, and Spotlight/Raycast discovery of a real installation have not been checked. The existing running app was left untouched; installation and uninstall refused it as intended.
 
-All 48 macOS tests, formatting, Clippy, and the release bundle build pass. A native menu smoke check confirmed Restart Timer placement and action routing, reload preserving the countdown, restart preserving pause, and active-break/quitting guards. The packaged overlay covered the built-in display, including the menu bar and Dock, and AeroSpace did not list it as a tiled window. The user confirmed centered content, twelve visible postpone choices, Skip, Postpone, Tab/Enter, Escape, and a usable reminder when its image was missing. The packaged menu's Pause, Resume, Reload Config, Open Config, and Quit actions were checked manually. A one-minute parent run showed a reminder; choosing 10 min changed the menu to a next break in about 10 min. An idle snapshot showed 0.0% CPU, about 46 MiB resident memory, and no AeroSpace-managed parent window. Sleep/wake behavior, multiple monitors, workspace switching, and scrolling on a shorter display still require manual checks.
+All 52 macOS tests, formatting, Clippy, and the release bundle build pass. A native menu smoke check confirmed Restart Timer placement and action routing, reload preserving the countdown, restart preserving pause, and active-break/quitting guards. The packaged overlay covered the built-in display, including the menu bar and Dock, and AeroSpace did not list it as a tiled window. The user confirmed centered content, twelve visible postpone choices, Skip, Postpone, Tab/Enter, Escape, and a usable reminder when its image was missing. The packaged menu's Pause, Resume, Reload Config, Open Config, and Quit actions were checked manually. A one-minute parent run showed a reminder; choosing 10 min changed the menu to a next break in about 10 min. An idle snapshot showed 0.0% CPU, about 46 MiB resident memory, and no AeroSpace-managed parent window. Sleep/wake behavior, multiple monitors, workspace switching, and scrolling on a shorter display still require manual checks.
+
+Media-pause checks cover YAML defaults and invalid values, launch-time settings, duplicate/stale readiness, command errors and timeouts, and macOS automation against simulated apps/tabs, including an unresponsive background tab. A headless Chrome check with a fresh temporary profile paused a playing top-level media element and a same-origin iframe player while keeping an already-paused element paused. A live Vivaldi check reproduced disabled JavaScript permission and a background-tab timeout. After enabling permission and updating the helper, it paused two muted test players across a page and same-origin iframe, preserved an already-paused player, and completed a scan across two windows in about three seconds. Its temporary test window and server were removed afterward. Control of installed native players and other browsers still requires a manual check. The Linux media module and its tests typecheck against an installed Linux target; the complete Linux app and a live MPRIS session remain unverified.
 
 Linux compilation and a live X11 tray/overlay check have **not** run yet. The current Mac lacks a matching Linux target standard library/toolchain and has no X11 session; macOS checks cannot establish X11 behavior.

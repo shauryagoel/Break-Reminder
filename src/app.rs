@@ -24,6 +24,7 @@ use winit::{
 
 use crate::{
     config::{self, Config},
+    media,
     protocol::{self, Action, Snapshot},
     timing::{Completion, Tick, Timer},
 };
@@ -33,6 +34,7 @@ enum AppEvent {
     Ready(u64),
     Finished(u64, Result<(Action, Instant), String>),
     Opened(Result<(), String>),
+    MediaPaused(Result<(), String>),
 }
 
 struct Active {
@@ -40,6 +42,7 @@ struct Active {
     snapshot: Snapshot,
     start: Sender<()>,
     cancel: Arc<AtomicBool>,
+    pause_media: bool,
 }
 
 struct AppState {
@@ -66,6 +69,7 @@ impl AppState {
             snapshot,
             start,
             cancel: cancel.clone(),
+            pause_media: self.config.pause_media,
         });
         cancel
     }
@@ -125,14 +129,20 @@ impl AppState {
         Some(deadline - Duration::from_secs((minutes as u64 - 1) * 60))
     }
 
-    fn ready(&mut self, id: u64, now: Instant) -> bool {
+    fn ready(&mut self, id: u64, now: Instant, pause_media: impl FnOnce()) -> bool {
         let Some(active) = self.active.as_ref().filter(|active| active.id == id) else {
             return false;
         };
         if !self.timer.visible(id, now) {
             return false;
         }
-        active.start.send(()).is_ok()
+        if active.start.send(()).is_err() {
+            return false;
+        }
+        if active.pause_media {
+            pause_media();
+        }
+        true
     }
 
     fn finish(&mut self, id: u64, action: Result<(Action, Instant), String>, now: Instant) -> bool {
@@ -381,7 +391,12 @@ impl ApplicationHandler<AppEvent> for App {
             AppEvent::Menu(_) => {}
             AppEvent::Ready(id) => {
                 if !self.quitting {
-                    self.state.ready(id, Instant::now());
+                    let proxy = self.proxy.clone();
+                    self.state.ready(id, Instant::now(), || {
+                        thread::spawn(move || {
+                            let _ = proxy.send_event(AppEvent::MediaPaused(media::pause()));
+                        });
+                    });
                 }
             }
             AppEvent::Finished(id, action) => {
@@ -404,6 +419,11 @@ impl ApplicationHandler<AppEvent> for App {
                 Ok(()) => self.feedback("Configuration opened"),
                 Err(error) => self.report_error("Open failed", &error),
             },
+            AppEvent::MediaPaused(result) => {
+                if let Err(error) = result {
+                    self.report_error("Media pause failed", &error);
+                }
+            }
         }
     }
 
@@ -880,6 +900,35 @@ mod tests {
     }
 
     #[test]
+    fn media_pauses_once_on_ready_using_the_launch_setting() {
+        for (enabled, connected) in [(false, true), (true, true), (true, false)] {
+            let mut config = config::load("assets/default-config.yaml".as_ref()).unwrap();
+            config.pause_media = enabled;
+            let start = Instant::now();
+            let due = start + config.interval;
+            let mut app = AppState::new(config, start);
+            let Some(Tick::LaunchOverlay(id)) = app.timer.tick(due) else {
+                panic!("break was not due");
+            };
+            let (sender, receiver) = mpsc::channel();
+            app.begin(id, Snapshot::from_config(&app.config), sender);
+            // A reload during launch must only change future breaks.
+            app.config.pause_media = !enabled;
+            let mut pauses = 0;
+            assert!(!app.ready(id + 1, due, || pauses += 1));
+            assert_eq!(pauses, 0);
+            let receiver = connected.then_some(receiver);
+            assert_eq!(app.ready(id, due, || pauses += 1), connected);
+            assert_eq!(pauses, usize::from(enabled && connected));
+            assert!(!app.ready(id, due, || pauses += 1));
+            assert!(app.finish(id, Ok((Action::Skip, due)), due));
+            assert!(!app.ready(id, due, || pauses += 1));
+            assert_eq!(pauses, usize::from(enabled && connected));
+            drop(receiver);
+        }
+    }
+
+    #[test]
     fn ready_starts_child_and_postpone_uses_launch_snapshot() {
         let mut config = config::load("assets/default-config.yaml".as_ref()).unwrap();
         config.interval = Duration::from_secs(60);
@@ -893,7 +942,7 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         app.begin(id, snapshot, sender);
 
-        assert!(app.ready(id, start + Duration::from_secs(63)));
+        assert!(app.ready(id, start + Duration::from_secs(63), || {}));
         assert_eq!(receiver.try_recv(), Ok(()));
         assert!(app.finish(
             id,
@@ -969,7 +1018,7 @@ mod tests {
         let (sender, _receiver) = mpsc::channel();
         app.begin(id, Snapshot::from_config(&app.config), sender);
         assert!(!app.restart(start + Duration::from_secs(561)));
-        assert!(app.ready(id, start + Duration::from_secs(562)));
+        assert!(app.ready(id, start + Duration::from_secs(562), || {}));
         assert!(!app.restart(start + Duration::from_secs(563)));
         assert_eq!(
             app.status_text(start + Duration::from_secs(563)),
@@ -1014,7 +1063,7 @@ mod tests {
         fs::write(&path, "interval_minutes: 3\npostpone_minutes: [2, 7]\n").unwrap();
         app.reload(&path).unwrap();
         assert_eq!(app.config.postpone[1], Duration::from_secs(420));
-        assert!(app.ready(id, start + Duration::from_secs(122)));
+        assert!(app.ready(id, start + Duration::from_secs(122), || {}));
         assert_eq!(receiver.try_recv(), Ok(()));
         assert!(app.finish(
             id,
@@ -1085,7 +1134,7 @@ mod tests {
             let snapshot = Snapshot::from_config(&app.config);
             let (sender, receiver) = mpsc::channel();
             app.begin(id, snapshot, sender);
-            assert!(app.ready(id, start + Duration::from_secs(ready)));
+            assert!(app.ready(id, start + Duration::from_secs(ready), || {}));
             assert_eq!(receiver.try_recv(), Ok(()));
             assert!(app.finish(
                 id,
@@ -1126,7 +1175,7 @@ mod tests {
         };
         let (sender, _receiver) = mpsc::channel();
         app.begin(id, Snapshot::from_config(&app.config), sender);
-        assert!(app.ready(id, start + Duration::from_secs(61)));
+        assert!(app.ready(id, start + Duration::from_secs(61), || {}));
         assert!(app.finish(
             id,
             Ok((Action::Elapsed, start + Duration::from_secs(62))),
@@ -1138,7 +1187,7 @@ mod tests {
             Ok((Action::Postpone(0), start + Duration::from_secs(64))),
             start + Duration::from_secs(65),
         ));
-        assert!(!app.ready(id, start + Duration::from_secs(66)));
+        assert!(!app.ready(id, start + Duration::from_secs(66), || {}));
         assert_eq!(app.timer.deadline(), Some(start + Duration::from_secs(123)));
     }
 
