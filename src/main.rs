@@ -7,7 +7,14 @@ mod protocol;
 #[allow(dead_code)] // display_remaining remains part of the tested timer contract.
 mod timing;
 
-use std::{env, ffi::OsStr, path::PathBuf, process};
+use std::{
+    env,
+    ffi::OsStr,
+    fs::{self, File, TryLockError},
+    io,
+    path::{Path, PathBuf},
+    process,
+};
 
 fn main() {
     if let Err(error) = run() {
@@ -57,6 +64,15 @@ fn run() -> Result<(), String> {
     };
     if !check_config {
         ensure_supported_session()?;
+        let home = env::var_os("HOME")
+            .filter(|home| !home.is_empty())
+            .ok_or("HOME is not set")?;
+        let Some(_instance) = instance_lock(Path::new(&home))
+            .map_err(|error| format!("Cannot acquire instance lock: {error}"))?
+        else {
+            eprintln!("Break Reminder is already running");
+            return Ok(());
+        };
         return app::run(&path);
     }
     config::load(&path).map_err(|error| error.to_string())?;
@@ -65,6 +81,22 @@ fn run() -> Result<(), String> {
         .map_err(|error| format!("{}: {error}", path.display()))?;
     println!("Config valid: {}", resolved.display());
     Ok(())
+}
+
+fn instance_lock(home: &Path) -> io::Result<Option<File>> {
+    let directory = home.join(".config/break-reminder");
+    fs::create_dir_all(&directory)?;
+    let file = File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(directory.join("instance.lock"))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(TryLockError::WouldBlock) => Ok(None),
+        Err(TryLockError::Error(error)) => Err(error),
+    }
 }
 
 fn ensure_supported_session() -> Result<(), String> {
@@ -90,9 +122,35 @@ fn x11_session(session_type: Option<&OsStr>, display: Option<&OsStr>) -> Result<
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::OsStr;
+    use std::{
+        ffi::OsStr,
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
-    use super::x11_session;
+    use super::{instance_lock, x11_session};
+
+    #[test]
+    fn instance_lock_blocks_duplicates_and_reuses_the_persistent_file() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let home = std::env::temp_dir().join(format!(
+            "break-reminder-instance-{}-{suffix}",
+            std::process::id()
+        ));
+        let path = home.join(".config/break-reminder/instance.lock");
+        let first = instance_lock(&home).unwrap().expect("first instance");
+        fs::write(&path, b"persistent lock file").unwrap();
+        assert!(instance_lock(&home).unwrap().is_none());
+        drop(first);
+        assert_eq!(fs::read(&path).unwrap(), b"persistent lock file");
+        let restarted = instance_lock(&home).unwrap().expect("restarted instance");
+        assert_eq!(fs::read(&path).unwrap(), b"persistent lock file");
+        drop(restarted);
+        fs::remove_dir_all(home).unwrap();
+    }
 
     #[test]
     fn linux_gui_requires_x11_session_and_display() {
