@@ -2,7 +2,7 @@
 
 ## Objective
 
-Complete the [break reminder](CAPABILITY-MAP.md) as a Rust desktop app. Between breaks it lives in the macOS menu bar or an X11 tray without an application window. At each due time it covers every connected monitor with a temporary, interactive reminder window that does not enter a native fullscreen Space or become an AeroSpace tile. The current machine is macOS; X11 is the other first-release target. The existing [`configuration`](SPEC-configuration.md) and [`reminder-timing`](SPEC-reminder-timing.md) modules provide validated settings and scheduling.
+Complete the [break reminder](CAPABILITY-MAP.md) as a Rust desktop app. Between breaks it lives in the macOS menu bar or an X11 tray without an application window. At each due time it covers every connected monitor with a temporary, interactive reminder window that does not create its own native fullscreen Space or become an AeroSpace tile. On macOS, it also appears above apps already in full-screen Spaces. The current machine is macOS; X11 is the other first-release target. The existing [`configuration`](SPEC-configuration.md) and [`reminder-timing`](SPEC-reminder-timing.md) modules provide validated settings and scheduling.
 
 ## User behavior
 
@@ -87,6 +87,8 @@ if let Ok(replacement) = config::load(&path) {
 Real reload code also reports an error without changing either value.
 
 ## Testing strategy
+
+On macOS, `cargo build && python3 scripts/check-macos-fullscreen.py` runs the actual overlay above a temporary native full-screen test app. It checks that both windows remain in the same visible Space, the reminder is above the full-screen window, and the countdown begins only after `START` and emits `ELAPSED` before exit. The shared AppKit configuration uses `FullScreenAuxiliary` with `CanJoinAllSpaces` so root and additional-display windows can join an existing full-screen Space. It must not use `FullScreenNone`, which reproduced a hidden reminder despite `READY` on the tested Mac. The check removes its temporary host and overlay afterward.
 
 Keep deterministic tests for protocol parsing and event ordering: valid snapshot, READY/START, one terminal result, duplicate and stale messages, child exit before buffered outcome, missing outcome, reload during display retaining old Postpone choices, spawn failure, and elapsed only after readiness/deadline. Add focused image decode/fallback and contain/cover geometry checks. Existing config and timing tests must remain green. Use a short-interval Mac run to inspect actual screen bounds, menu bar/Dock coverage, AeroSpace behavior, focus, button clicks, Escape/Tab/Enter, multi-monitor action sync, and dismissal. Sleep/wake the Mac partway through an interval and a visible break and confirm the remaining time is unchanged. Inspect idle CPU/memory and ensure no hidden app window persists. An X11 build and real-session check are required before claiming its tray, stacking, focus, and monitor behavior verified; macOS results alone cannot establish those.
 

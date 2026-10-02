@@ -39,10 +39,11 @@ fn child_window(title: &str) -> Result<Retained<NSWindow>, String> {
 }
 
 fn configure(window: &NSWindow, frame: NSRect) {
+    // Join an existing fullscreen Space without creating one for the reminder.
     window.setCollectionBehavior(
         NSWindowCollectionBehavior::CanJoinAllSpaces
             | NSWindowCollectionBehavior::Stationary
-            | NSWindowCollectionBehavior::FullScreenNone
+            | NSWindowCollectionBehavior::FullScreenAuxiliary
             | NSWindowCollectionBehavior::FullScreenDisallowsTiling,
     );
     window.setLevel(NSPopUpMenuWindowLevel);

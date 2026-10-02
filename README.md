@@ -1,6 +1,6 @@
 # Break Reminder
 
-A small Rust menu-bar app for regular breaks. It waits quietly between reminders, then shows a temporary, borderless window across each connected display. The reminder does not enter a native fullscreen Space. The first release targets macOS and Linux/X11.
+A small Rust menu-bar app for regular breaks. It waits quietly between reminders, then shows a temporary, borderless window across each connected display. On macOS, it also appears above apps in their existing full-screen Spaces without creating its own fullscreen Space. The first release targets macOS and Linux/X11.
 
 ## Install and start at login
 
@@ -124,6 +124,8 @@ cargo build --release
 The tray uses the StatusNotifier protocol; your desktop needs a StatusNotifier watcher and host to display the icon. The selected [tray-icon KSNI backend](https://docs.rs/crate/tray-icon/0.25.1/source/README.md) does not require the GTK/AppIndicator packages listed for its default backend. **Open Config** also needs `xdg-open`. Both the parent and overlay select X11 if both X11 and Wayland display variables exist, but a session identified by `XDG_SESSION_TYPE=wayland` is rejected even if XWayland provides `DISPLAY`. A missing or empty `DISPLAY` is rejected too. Wayland and Windows are outside this release.
 
 ## Verification status
+
+After `cargo build`, run `python3 scripts/check-macos-fullscreen.py` on macOS to check the reminder above a temporary native full-screen test app. The check reproduced a hidden reminder despite `READY` before the window-policy fix, then passed with the reminder above the same full-screen Space and its full countdown preserved. It closes both test processes automatically. The user subsequently confirmed full-screen YouTube behavior and Skip/Postpone controls work in Chrome and Vivaldi.
 
 `./scripts/check-install.sh` checks macOS/Linux installation layouts in temporary homes, including running-app refusal, registration data, settings preservation, repeat install/uninstall, and interrupted macOS replacement rollback. A temporary packaged macOS copy passed native parent launch, duplicate prevention, refusal to uninstall while running, and restart after process exit. Login-job loading, logout/reboot startup, and Spotlight/Raycast discovery of a real installation have not been checked. The existing running app was left untouched; installation and uninstall refused it as intended.
 
