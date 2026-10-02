@@ -49,7 +49,9 @@ Install Rust 1.95 or newer, then build and launch the menu-bar app:
 open "target/macos/Break Reminder.app"
 ```
 
-The bundle has identifier `com.breakreminder.app` and `LSUIElement=true`, so it runs in the menu bar without a Dock icon. For development, `cargo run --release -- --config /path/to/config.yaml` accepts a separate config file. Quit from the menu-bar icon.
+The bundle has identifier `com.breakreminder.app` and `LSUIElement=true`, so it runs in the menu bar without a Dock icon. It includes a green clock [application icon](assets/app-icon.png) for native launchers, with the multi-resolution `assets/app-icon.icns` copied into the bundle's Resources directory. Reinstall after quitting to update an existing installation; launcher icon caches may take time to refresh. For development, `cargo run --release -- --config /path/to/config.yaml` accepts a separate config file. Quit from the menu-bar icon.
+
+To regenerate the icon artwork on macOS, run `swift scripts/generate-app-icon.swift`, then package or reinstall the app. Ordinary builds use the checked-in icon and do not require Swift.
 
 On first launch, the app creates `~/.config/break-reminder/config.yaml` from [the sample](assets/default-config.yaml). Edit it, then choose **Reload Config** from the menu; reloading preserves the current countdown and paused state. **Open Config** opens the file in your desktop's default app. **Pause** keeps the remaining interval; **Resume** continues it. **Restart Timer**, directly below Pause/Resume, resets the countdown to the latest configured full interval and keeps a paused timer paused. Pause/Resume and Restart Timer are disabled during an active break. The status item shows the next break, a paused state, or a break in progress. An invalid reload leaves the previous settings active and reports an error in the menu and on stderr. You can validate a file without starting the UI:
 

@@ -5,8 +5,9 @@ project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/break-reminder-install.XXXXXX")
 scratch=$(CDPATH= cd -- "$scratch" && pwd -P)
 trap 'rm -rf "$scratch"' 0
-mkdir -p "$scratch/project/scripts" "$scratch/stubs"
+mkdir -p "$scratch/project/scripts" "$scratch/project/assets" "$scratch/stubs"
 cp "$project_dir/scripts/"*.sh "$scratch/project/scripts/"
+cp "$project_dir/assets/app-icon.icns" "$scratch/project/assets/"
 project="$scratch/project"
 CHECK_NATIVE_MV=$(command -v mv)
 
@@ -127,6 +128,8 @@ plist="$HOME/Library/LaunchAgents/com.breakreminder.app.plist"
 [ -x "$bundle/Contents/MacOS/break-reminder" ] || fail 'Mac executable missing or not executable'
 has "$bundle/Contents/Info.plist" '<string>com.breakreminder.app</string>'
 has "$bundle/Contents/Info.plist" '<key>LSUIElement</key><true/>'
+has "$bundle/Contents/Info.plist" '<key>CFBundleIconFile</key><string>app-icon.icns</string>'
+cmp "$project_dir/assets/app-icon.icns" "$bundle/Contents/Resources/app-icon.icns" || fail 'Mac app icon missing or changed during installation'
 encoded_home=$(printf '%s' "$HOME" | sed 's/\&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g; s/'"'"'/\&apos;/g')
 has "$plist" "$encoded_home/Applications/Break Reminder.app/Contents/MacOS/break-reminder"
 has "$plist" "$encoded_home/Library/Logs/break-reminder.log"
