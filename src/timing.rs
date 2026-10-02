@@ -67,12 +67,7 @@ impl Timer {
         }
     }
 
-    pub fn reload(&mut self, interval: Duration, display: Duration, now: Instant) {
-        match &mut self.state {
-            State::Waiting(deadline) => *deadline = now + interval,
-            State::Paused(remaining) => *remaining = interval,
-            State::Launching { .. } | State::Showing { .. } => {}
-        }
+    pub fn reload(&mut self, interval: Duration, display: Duration) {
         self.interval = interval;
         self.display = display;
     }
@@ -320,26 +315,49 @@ mod tests {
     }
 
     #[test]
-    fn reload_resets_waiting_and_paused_intervals() {
+    fn reload_preserves_waiting_and_paused_intervals_and_updates_future_breaks() {
         let start = Instant::now();
         let mut timer = Timer::new(seconds(60), seconds(30), start);
-        timer.reload(seconds(90), seconds(45), start + seconds(20));
-        assert_eq!(timer.deadline(), Some(start + seconds(110)));
+        timer.reload(seconds(90), seconds(45));
+        assert_eq!(timer.deadline(), Some(start + seconds(60)));
         assert!(timer.pause(start + seconds(30)));
-        timer.reload(seconds(120), seconds(50), start + seconds(40));
+        timer.reload(seconds(120), seconds(50));
         assert!(timer.is_paused());
         assert_eq!(timer.deadline(), None);
         assert!(timer.resume(start + seconds(100)));
-        assert_eq!(timer.deadline(), Some(start + seconds(220)));
+        assert_eq!(timer.deadline(), Some(start + seconds(130)));
+        assert_eq!(timer.tick(start + seconds(129)), None);
         assert_eq!(
-            timer.tick(start + seconds(220)),
+            timer.tick(start + seconds(130)),
             Some(Tick::LaunchOverlay(1))
         );
-        assert!(timer.visible(1, start + seconds(221)));
+        assert!(timer.visible(1, start + seconds(131)));
         assert_eq!(timer.deadline(), None);
         assert_eq!(
-            timer.display_remaining(start + seconds(221)),
+            timer.display_remaining(start + seconds(131)),
             Some(seconds(50))
+        );
+        assert!(timer.complete(1, Completion::Elapsed, start + seconds(181)));
+        assert_eq!(timer.deadline(), Some(start + seconds(301)));
+    }
+
+    #[test]
+    fn reload_preserves_postponed_and_overdue_deadlines() {
+        let start = Instant::now();
+        let mut timer = Timer::new(seconds(60), seconds(30), start);
+        timer.reload(seconds(120), seconds(45));
+        assert_eq!(timer.deadline(), Some(start + seconds(60)));
+        assert_eq!(
+            timer.tick(start + seconds(90)),
+            Some(Tick::LaunchOverlay(1))
+        );
+        assert!(timer.complete(1, Completion::Postpone(seconds(600)), start + seconds(91)));
+        timer.reload(seconds(30), seconds(20));
+        assert_eq!(timer.deadline(), Some(start + seconds(691)));
+        assert_eq!(timer.tick(start + seconds(690)), None);
+        assert_eq!(
+            timer.tick(start + seconds(691)),
+            Some(Tick::LaunchOverlay(2))
         );
     }
 
@@ -351,7 +369,7 @@ mod tests {
             timer.tick(start + seconds(60)),
             Some(Tick::LaunchOverlay(1))
         );
-        timer.reload(seconds(120), seconds(45), start + seconds(61));
+        timer.reload(seconds(120), seconds(45));
         assert_eq!(timer.deadline(), None);
         assert!(timer.visible(1, start + seconds(63)));
         assert_eq!(
@@ -376,7 +394,7 @@ mod tests {
             timer.display_remaining(start + seconds(61)),
             Some(seconds(30))
         );
-        timer.reload(seconds(120), seconds(45), start + seconds(65));
+        timer.reload(seconds(120), seconds(45));
         assert_eq!(
             timer.display_remaining(start + seconds(65)),
             Some(seconds(26))

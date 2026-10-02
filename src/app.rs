@@ -81,10 +81,9 @@ impl AppState {
         }
     }
 
-    fn reload(&mut self, path: &Path, now: Instant) -> Result<(), String> {
+    fn reload(&mut self, path: &Path) -> Result<(), String> {
         let replacement = config::load(path).map_err(|error| error.to_string())?;
-        self.timer
-            .reload(replacement.interval, replacement.display, now);
+        self.timer.reload(replacement.interval, replacement.display);
         self.config = replacement;
         Ok(())
     }
@@ -357,7 +356,7 @@ impl ApplicationHandler<AppEvent> for App {
                     "pause" => {
                         self.state.toggle_pause(Instant::now());
                     }
-                    "reload" => match self.state.reload(&self.config_path, Instant::now()) {
+                    "reload" => match self.state.reload(&self.config_path) {
                         Ok(()) => self.feedback("Settings reloaded"),
                         Err(error) => self.report_error("Reload failed", &error),
                     },
@@ -943,31 +942,32 @@ mod tests {
         let mut app = AppState::new(config, start);
 
         fs::write(&path, "interval_minutes: 0\n").unwrap();
-        assert!(app.reload(&path, start + Duration::from_secs(30)).is_err());
+        assert!(app.reload(&path).is_err());
         assert_eq!(app.timer.deadline(), Some(start + Duration::from_secs(120)));
         assert_eq!(app.config.postpone[1], Duration::from_secs(900));
 
         fs::write(&path, "interval_minutes: 1\npostpone_minutes: [5, 20]\n").unwrap();
-        app.reload(&path, start + Duration::from_secs(30)).unwrap();
-        assert_eq!(app.timer.deadline(), Some(start + Duration::from_secs(90)));
-        let Some(Tick::LaunchOverlay(id)) = app.timer.tick(start + Duration::from_secs(90)) else {
+        app.reload(&path).unwrap();
+        assert_eq!(app.config.interval, Duration::from_secs(60));
+        assert_eq!(app.timer.deadline(), Some(start + Duration::from_secs(120)));
+        let Some(Tick::LaunchOverlay(id)) = app.timer.tick(start + Duration::from_secs(120)) else {
             panic!("break was not due");
         };
         let (sender, receiver) = mpsc::channel();
         app.begin(id, Snapshot::from_config(&app.config), sender);
         fs::write(&path, "interval_minutes: 3\npostpone_minutes: [2, 7]\n").unwrap();
-        app.reload(&path, start + Duration::from_secs(91)).unwrap();
+        app.reload(&path).unwrap();
         assert_eq!(app.config.postpone[1], Duration::from_secs(420));
-        assert!(app.ready(id, start + Duration::from_secs(92)));
+        assert!(app.ready(id, start + Duration::from_secs(122)));
         assert_eq!(receiver.try_recv(), Ok(()));
         assert!(app.finish(
             id,
-            Ok((Action::Postpone(1), start + Duration::from_secs(93))),
-            start + Duration::from_secs(93)
+            Ok((Action::Postpone(1), start + Duration::from_secs(123))),
+            start + Duration::from_secs(123)
         ));
         assert_eq!(
             app.timer.deadline(),
-            Some(start + Duration::from_secs(1293))
+            Some(start + Duration::from_secs(1323))
         );
         fs::remove_file(path).unwrap();
     }
