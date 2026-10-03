@@ -2,7 +2,7 @@
 
 ## Overview
 
-Implement the approved [window spec](../SPEC-reminder-window.md) on top of the completed [configuration](../SPEC-configuration.md) and [timing](../SPEC-reminder-timing.md) modules. Prove the macOS covering window and AeroSpace behavior early, then wire the windowless menu-bar parent to a short-lived overlay child. Finish image/layout work and packaging after the core break flow is live. The completed timing plan is archived in `tasks/reminder-timing-plan.md`.
+Implement the approved [window spec](../SPEC-reminder-window.md) on top of the completed [configuration](../SPEC-configuration.md) and [timing](../SPEC-reminder-timing.md) modules. Prove the macOS covering window and AeroSpace behavior early, then wire the windowless menu-bar parent to a short-lived overlay child. Finish image/layout work and packaging after the core break flow is live.
 
 ## Dependency order and architecture decisions
 
@@ -52,7 +52,7 @@ bounded child snapshot and one-screen overlay
 
 ### Checkpoint: Window module complete
 
-- [ ] `cargo test --all-targets`, `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo build --release` pass on macOS.
+- [x] `cargo test --all-targets` (60 passed, 0 failed), `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo build --release` pass on macOS (review fixes verified 2026-10-03).
 - [ ] The packaged Mac app passes the screen, tray, image, action, reload, and sleep/wake checks in `SPEC-reminder-window.md`.
 - [ ] Linux/X11 build commands and runtime prerequisites are documented; an actual Linux build is run when a build host or CI runner is available, and X11 runtime is labelled unverified until tested in a session.
 - [ ] Code review finds no unresolved timer/protocol/window correctness issue; user reviews the implemented module.
