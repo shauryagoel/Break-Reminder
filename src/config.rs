@@ -12,6 +12,11 @@ use serde::Deserialize;
 
 const SAMPLE: &str = include_str!("../assets/default-config.yaml");
 
+pub const MAX_INTERVAL_MINUTES: u32 = 1_440;
+pub const MAX_DURATION_SECONDS: u32 = 3_600;
+pub const MAX_POSTPONE_MINUTES: u32 = 1_440;
+pub const MAX_POSTPONE_CHOICES: usize = 12;
+
 #[derive(Debug, PartialEq)]
 pub struct Config {
     pub interval: Duration,
@@ -19,6 +24,12 @@ pub struct Config {
     pub postpone: Vec<Duration>,
     pub pause_media: bool,
     pub appearance: Appearance,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        from_raw(RawConfig::default())
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -124,15 +135,18 @@ pub fn load(path: &Path) -> Result<Config, ConfigError> {
             {
                 fs::create_dir_all(parent).map_err(|error| ConfigError::new(path, error))?;
             }
-            // ponytail: a simultaneous first launch may read a partial sample; use atomic publication if needed.
+            // ponytail: failed writes are removed; a simultaneous first launch may still read a partial sample.
             match fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(path)
             {
-                Ok(mut file) => file
-                    .write_all(SAMPLE.as_bytes())
-                    .map_err(|error| ConfigError::new(path, error))?,
+                Ok(mut file) => {
+                    if let Err(error) = file.write_all(SAMPLE.as_bytes()) {
+                        let _ = fs::remove_file(path);
+                        return Err(ConfigError::new(path, error));
+                    }
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(error) => return Err(ConfigError::new(path, error)),
             }
@@ -150,7 +164,11 @@ pub fn load(path: &Path) -> Result<Config, ConfigError> {
     )
     .map_err(|error| ConfigError::new(path, error))?;
     validate(path, &mut raw)?;
-    Ok(Config {
+    Ok(from_raw(raw))
+}
+
+fn from_raw(raw: RawConfig) -> Config {
+    Config {
         interval: Duration::from_secs(u64::from(raw.interval_minutes) * 60),
         display: Duration::from_secs(u64::from(raw.duration_seconds)),
         postpone: raw
@@ -160,7 +178,7 @@ pub fn load(path: &Path) -> Result<Config, ConfigError> {
             .collect(),
         pause_media: raw.pause_media,
         appearance: raw.appearance,
-    })
+    }
 }
 
 fn invalid(path: &Path, field: &str, reason: &str) -> ConfigError {
@@ -182,18 +200,28 @@ fn in_range(path: &Path, field: &str, value: u32, end: u32) -> Result<(), Config
 }
 
 fn validate(path: &Path, config: &mut RawConfig) -> Result<(), ConfigError> {
-    in_range(path, "interval_minutes", config.interval_minutes, 1_440)?;
-    in_range(path, "duration_seconds", config.duration_seconds, 3_600)?;
-    if !(1..=12).contains(&config.postpone_minutes.len()) {
+    in_range(
+        path,
+        "interval_minutes",
+        config.interval_minutes,
+        MAX_INTERVAL_MINUTES,
+    )?;
+    in_range(
+        path,
+        "duration_seconds",
+        config.duration_seconds,
+        MAX_DURATION_SECONDS,
+    )?;
+    if !(1..=MAX_POSTPONE_CHOICES).contains(&config.postpone_minutes.len()) {
         return Err(invalid(
             path,
             "postpone_minutes",
-            "must contain 1 to 12 delays",
+            &format!("must contain 1 to {MAX_POSTPONE_CHOICES} delays"),
         ));
     }
     let mut seen = HashSet::new();
     for &minutes in &config.postpone_minutes {
-        in_range(path, "postpone_minutes", minutes, 1_440)?;
+        in_range(path, "postpone_minutes", minutes, MAX_POSTPONE_MINUTES)?;
         if !seen.insert(minutes) {
             return Err(invalid(
                 path,
@@ -224,10 +252,7 @@ fn validate(path: &Path, config: &mut RawConfig) -> Result<(), ConfigError> {
             config.appearance.accent_color.as_str(),
         ),
     ] {
-        if value.len() != 7
-            || !value.starts_with('#')
-            || !value[1..].bytes().all(|byte| byte.is_ascii_hexdigit())
-        {
+        if !valid_color(value) {
             return Err(invalid(path, field, "must be a #RRGGBB color"));
         }
     }
@@ -257,6 +282,12 @@ fn validate(path: &Path, config: &mut RawConfig) -> Result<(), ConfigError> {
     Ok(())
 }
 
+pub fn valid_color(value: &str) -> bool {
+    value.len() == 7
+        && value.starts_with('#')
+        && value[1..].bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -266,7 +297,7 @@ mod tests {
         time::{Duration, SystemTime},
     };
 
-    use super::{default_path, load};
+    use super::{Config, default_path, load};
 
     static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
@@ -311,6 +342,14 @@ mod tests {
         fn drop(&mut self) {
             fs::remove_dir_all(&self.directory).unwrap();
         }
+    }
+
+    #[test]
+    fn defaults_match_the_sample_configuration() {
+        assert_eq!(
+            Config::default(),
+            load("assets/default-config.yaml".as_ref()).unwrap()
+        );
     }
 
     #[test]

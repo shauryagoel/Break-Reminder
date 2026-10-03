@@ -6,7 +6,9 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::{Config, ImageFit};
+use crate::config::{
+    Config, ImageFit, MAX_DURATION_SECONDS, MAX_POSTPONE_CHOICES, MAX_POSTPONE_MINUTES, valid_color,
+};
 
 const MAX_SNAPSHOT_BYTES: usize = 256 * 1024;
 
@@ -63,17 +65,12 @@ impl Snapshot {
     }
 
     fn validate(&self) -> io::Result<()> {
-        let valid_color = |color: &str| {
-            color.len() == 7
-                && color.starts_with('#')
-                && color[1..].bytes().all(|byte| byte.is_ascii_hexdigit())
-        };
-        if !(1..=3600).contains(&self.duration_seconds)
-            || !(1..=12).contains(&self.postpone_minutes.len())
+        if !(1..=MAX_DURATION_SECONDS).contains(&self.duration_seconds)
+            || !(1..=MAX_POSTPONE_CHOICES).contains(&self.postpone_minutes.len())
             || self
                 .postpone_minutes
                 .iter()
-                .any(|minutes| !(1..=1440).contains(minutes))
+                .any(|minutes| !(1..=MAX_POSTPONE_MINUTES).contains(minutes))
             || self
                 .postpone_minutes
                 .iter()

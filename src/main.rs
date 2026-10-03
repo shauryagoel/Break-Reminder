@@ -5,7 +5,6 @@ mod macos_window;
 mod media;
 mod overlay;
 mod protocol;
-#[allow(dead_code)] // display_remaining remains part of the tested timer contract.
 mod timing;
 
 use std::{

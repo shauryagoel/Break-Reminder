@@ -11,6 +11,7 @@ pub enum Completion {
     Skip,
     Postpone(Duration),
     Failed,
+    #[cfg(test)]
     Closed,
 }
 
@@ -111,6 +112,7 @@ impl Timer {
         }
     }
 
+    #[cfg(test)]
     pub fn display_remaining(&self, now: Instant) -> Option<Duration> {
         match self.state {
             State::Showing { deadline, .. } => Some(deadline.saturating_duration_since(now)),
@@ -132,9 +134,9 @@ impl Timer {
         }
         let delay = match completion {
             Completion::Postpone(delay) => delay,
-            Completion::Elapsed | Completion::Skip | Completion::Failed | Completion::Closed => {
-                self.interval
-            }
+            Completion::Elapsed | Completion::Skip | Completion::Failed => self.interval,
+            #[cfg(test)]
+            Completion::Closed => self.interval,
         };
         self.state = State::Waiting(now + delay);
         true

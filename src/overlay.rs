@@ -10,7 +10,6 @@ use winit::window::Window;
 
 use crate::protocol::{self, Action, Fit, Output, Snapshot};
 
-#[path = "image.rs"]
 mod image;
 
 #[derive(Clone, Copy)]
@@ -24,6 +23,32 @@ struct Screen {
     physical_position: (i32, i32),
     #[cfg(target_os = "linux")]
     physical_size: (u32, u32),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Readiness {
+    Ready,
+    Retry,
+    DropPending,
+    Fail,
+}
+
+fn readiness(root_ready: bool, pending: bool, exhausted: bool) -> Readiness {
+    if !root_ready {
+        if exhausted {
+            Readiness::Fail
+        } else {
+            Readiness::Retry
+        }
+    } else if pending {
+        if exhausted {
+            Readiness::DropPending
+        } else {
+            Readiness::Retry
+        }
+    } else {
+        Readiness::Ready
+    }
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -220,7 +245,8 @@ struct Overlay {
     deadline: Option<Instant>,
     output: Output<io::Stdout>,
     root: std::sync::Arc<Window>,
-    screens: Vec<Screen>,
+    root_screen: Screen,
+    secondary: Vec<(usize, Screen)>,
     first_frame: Option<u64>,
     #[cfg(target_os = "macos")]
     readiness_retry: bool,
@@ -245,7 +271,8 @@ impl Overlay {
             deadline: None,
             output: Output::new(io::stdout()),
             root,
-            screens,
+            root_screen: screens[0],
+            secondary: screens.into_iter().enumerate().skip(1).collect(),
             first_frame: None,
             #[cfg(target_os = "macos")]
             readiness_retry: false,
@@ -265,6 +292,20 @@ impl Overlay {
             eprintln!("cannot send reminder action: {error}");
         }
         context.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
+    }
+
+    fn drop_pending(&mut self, pending: &[usize], context: &egui::Context) {
+        if pending.is_empty() {
+            return;
+        }
+        for index in pending {
+            eprintln!(
+                "skipping reminder display {index}: window did not stay at its display bounds"
+            );
+        }
+        self.secondary.retain(|(index, _)| !pending.contains(index));
+        // Egui closes omitted immediate viewports on the next parent pass.
+        context.request_repaint();
     }
 
     fn color(hex: &str) -> Color32 {
@@ -508,10 +549,13 @@ impl eframe::App for Overlay {
 
         let now = Instant::now();
         let mut choice = self.paint(ui, now);
-        let mut children_ready = true;
-        for (index, screen) in self.screens.iter().copied().enumerate().skip(1) {
+        let mut failed = Vec::new();
+        let mut pending = Vec::new();
+        for (index, screen) in self.secondary.iter().copied() {
             let title = child_title(index);
             let mut child_error = None;
+            #[cfg(target_os = "linux")]
+            let mut child_ready = true;
             context.show_viewport_immediate(
                 egui::ViewportId::from_hash_of(("break-reminder-screen", index)),
                 viewport(screen, title.clone()),
@@ -527,26 +571,36 @@ impl eframe::App for Overlay {
                     }
                     #[cfg(target_os = "linux")]
                     {
-                        children_ready &= align_child(ui.ctx(), screen);
+                        child_ready = align_child(ui.ctx(), screen);
                     }
                     choice = choice.or_else(|| self.paint(ui, now));
                 },
             );
             if let Some(error) = child_error {
-                eprintln!("cannot prepare reminder display {index}: {error}");
-                context.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
-                return;
+                eprintln!("skipping reminder display {index}: {error}");
+                failed.push(index);
+                continue;
             }
             #[cfg(target_os = "macos")]
-            match crate::macos_window::show_child(&title, screen.frame) {
-                Ok(visible) => children_ready &= visible,
+            let child_ready = match crate::macos_window::show_child(&title, screen.frame) {
+                Ok(visible) => visible,
                 Err(error) => {
-                    eprintln!("cannot show reminder display {index}: {error}");
-                    context
-                        .send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
-                    return;
+                    eprintln!("skipping reminder display {index}: {error}");
+                    failed.push(index);
+                    continue;
                 }
+            };
+            if !child_ready {
+                pending.push(index);
             }
+        }
+        if !failed.is_empty() {
+            self.secondary.retain(|(index, _)| !failed.contains(index));
+            // A child shown in this pass is removed after a following pass omits it.
+            context.request_repaint();
+        }
+        if self.ready {
+            self.drop_pending(&pending, &context);
         }
 
         if let Some(action) = choice {
@@ -566,44 +620,45 @@ impl eframe::App for Overlay {
             })
         {
             #[cfg(target_os = "macos")]
-            if !children_ready
-                || !crate::macos_window::root_ready(&self.root, self.screens[0].frame)
-            {
-                if self.readiness_retry {
-                    eprintln!("reminder windows did not stay visible at their screen frames");
-                    context
-                        .send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
-                    return;
-                }
-                self.readiness_retry = true;
-                if let Err(error) =
-                    crate::macos_window::configure_root(&self.root, self.screens[0].frame)
-                {
-                    eprintln!("cannot reposition reminder root: {error}");
-                    context
-                        .send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
-                    return;
-                }
-                context.request_repaint();
-                return;
-            }
+            let root_ready = crate::macos_window::root_ready(&self.root, self.root_screen.frame);
             #[cfg(target_os = "linux")]
-            if !children_ready || !root_ready(&self.root, self.screens[0]) {
-                if self.readiness_attempts >= 8 {
-                    eprintln!("X11 reminder windows did not stay at their monitor bounds");
+            let root_ready = root_ready(&self.root, self.root_screen);
+            #[cfg(target_os = "macos")]
+            let exhausted = self.readiness_retry;
+            #[cfg(target_os = "linux")]
+            let exhausted = self.readiness_attempts >= 8;
+            match readiness(root_ready, !pending.is_empty(), exhausted) {
+                Readiness::Retry => {
+                    #[cfg(target_os = "macos")]
+                    {
+                        self.readiness_retry = true;
+                    }
+                    #[cfg(target_os = "linux")]
+                    {
+                        self.readiness_attempts += 1;
+                    }
+                    if let Err(error) = place_root(&self.root, self.root_screen) {
+                        eprintln!("cannot reposition reminder root: {error}");
+                        context.send_viewport_cmd_to(
+                            egui::ViewportId::ROOT,
+                            egui::ViewportCommand::Close,
+                        );
+                        return;
+                    }
+                    #[cfg(target_os = "macos")]
+                    context.request_repaint();
+                    #[cfg(target_os = "linux")]
+                    context.request_repaint_after(Duration::from_millis(50));
+                    return;
+                }
+                Readiness::DropPending => self.drop_pending(&pending, &context),
+                Readiness::Fail => {
+                    eprintln!("reminder root did not stay at its display bounds");
                     context
                         .send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
                     return;
                 }
-                self.readiness_attempts += 1;
-                if let Err(error) = place_root(&self.root, self.screens[0]) {
-                    eprintln!("cannot reposition X11 reminder root: {error}");
-                    context
-                        .send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
-                    return;
-                }
-                context.request_repaint_after(Duration::from_millis(50));
-                return;
+                Readiness::Ready => {}
             }
             if let Err(error) = self.output.ready() {
                 eprintln!("cannot send reminder readiness: {error}");
@@ -629,7 +684,20 @@ impl eframe::App for Overlay {
 mod tests {
     use eframe::egui::{self, Rect, pos2, vec2};
 
-    use super::{Overlay, physical_to_logical};
+    use super::{Overlay, Readiness, physical_to_logical, readiness};
+
+    #[test]
+    fn readiness_drops_pending_secondaries_only_after_root_is_ready() {
+        for pending in [false, true] {
+            assert_eq!(readiness(false, pending, false), Readiness::Retry);
+            assert_eq!(readiness(false, pending, true), Readiness::Fail);
+        }
+        assert_eq!(readiness(true, true, false), Readiness::Retry);
+        assert_eq!(readiness(true, true, true), Readiness::DropPending);
+        for exhausted in [false, true] {
+            assert_eq!(readiness(true, false, exhausted), Readiness::Ready);
+        }
+    }
 
     #[test]
     fn reminder_column_is_centered_in_800_point_viewport() {

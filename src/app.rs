@@ -145,36 +145,43 @@ impl AppState {
         true
     }
 
-    fn finish(&mut self, id: u64, action: Result<(Action, Instant), String>, now: Instant) -> bool {
-        let Some(active) = self.active.as_ref().filter(|active| active.id == id) else {
-            return false;
-        };
-        let (completion, at) = match action {
-            Ok((Action::Elapsed, at)) => (Completion::Elapsed, at),
-            Ok((Action::Skip, at)) => (Completion::Skip, at),
+    fn finish(
+        &mut self,
+        id: u64,
+        action: Result<(Action, Instant), String>,
+        now: Instant,
+    ) -> Option<Result<(), String>> {
+        let active = self.active.as_ref().filter(|active| active.id == id)?;
+        let (completion, at, mut result) = match action {
+            Ok((Action::Elapsed, at)) => (Completion::Elapsed, at, Ok(())),
+            Ok((Action::Skip, at)) => (Completion::Skip, at, Ok(())),
             Ok((Action::Postpone(index), at)) => {
                 match active.snapshot.postpone_minutes.get(index) {
                     Some(minutes) => (
                         Completion::Postpone(Duration::from_secs(u64::from(*minutes) * 60)),
                         at,
+                        Ok(()),
                     ),
                     None => {
-                        eprintln!("overlay {id}: POSTPONE index is out of range");
-                        (Completion::Failed, now)
+                        let error = "POSTPONE index is out of range".to_owned();
+                        eprintln!("overlay {id}: {error}");
+                        (Completion::Failed, now, Err(error))
                     }
                 }
             }
             Err(error) => {
                 eprintln!("overlay {id}: {error}");
-                (Completion::Failed, now)
+                (Completion::Failed, now, Err(error))
             }
         };
         if !self.timer.complete(id, completion, at) {
-            eprintln!("overlay {id}: outcome arrived before its display deadline");
+            let error = "outcome arrived before its display deadline".to_owned();
+            eprintln!("overlay {id}: {error}");
             self.timer.complete(id, Completion::Failed, now);
+            result = Err(error);
         }
         self.active = None;
-        true
+        Some(result)
     }
 }
 
@@ -185,8 +192,65 @@ struct App {
     config_path: PathBuf,
     tray: Option<TrayIcon>,
     menu: Option<TrayMenu>,
+    note: MenuNote,
+    startup_config_error: Option<String>,
     quitting: bool,
     error: Option<String>,
+}
+
+struct MenuNote {
+    persistent: Option<String>,
+    current: String,
+    break_note: bool,
+}
+
+impl Default for MenuNote {
+    fn default() -> Self {
+        Self {
+            persistent: None,
+            current: "Settings loaded".into(),
+            break_note: false,
+        }
+    }
+}
+
+impl MenuNote {
+    fn feedback(&mut self, message: &str) {
+        self.current = self.persistent.as_deref().unwrap_or(message).into();
+        self.break_note = false;
+    }
+
+    fn error(&mut self, message: String, break_note: bool) {
+        self.current = message;
+        self.break_note = break_note;
+    }
+
+    fn config_error(&mut self, message: String) {
+        self.persistent = Some(message.clone());
+        self.error(message, false);
+    }
+
+    fn reloaded(&mut self) {
+        self.persistent = None;
+        self.feedback("Settings reloaded");
+    }
+
+    fn begin_break(&mut self) {
+        if self.break_note || self.persistent.is_some() {
+            self.feedback("Settings loaded");
+        }
+    }
+}
+
+fn menu_error(prefix: &str, error: &str) -> String {
+    let detail = error.replace('\n', " ");
+    format!("{prefix}: {}", detail.chars().take(64).collect::<String>())
+}
+
+fn config_error_detail<'a>(path: &Path, error: &'a str) -> &'a str {
+    error
+        .strip_prefix(&format!("{}: ", path.display()))
+        .unwrap_or(error)
 }
 
 struct TrayMenu {
@@ -243,6 +307,9 @@ impl App {
                 .map_err(|error| format!("cannot create tray icon: {error}"))?,
         );
         self.menu = Some(items);
+        if let Some(error) = self.startup_config_error.take() {
+            self.report_config_error("Config error", &error);
+        }
         self.refresh_menu(Instant::now());
         Ok(())
     }
@@ -251,6 +318,9 @@ impl App {
         let Some(menu) = &self.menu else {
             return;
         };
+        if menu.note.text() != self.note.current {
+            menu.note.set_text(&self.note.current);
+        }
         let status = if self.quitting {
             "Closing reminder...".into()
         } else {
@@ -275,18 +345,26 @@ impl App {
         }
     }
 
-    fn feedback(&self, message: &str) {
-        if let Some(menu) = &self.menu {
-            menu.note.set_text(message);
-        }
+    fn feedback(&mut self, message: &str) {
+        self.note.feedback(message);
     }
 
-    fn report_error(&self, prefix: &str, error: &str) {
+    fn report_error(&mut self, prefix: &str, error: &str) {
         eprintln!("{prefix}: {error}");
-        let detail = error.split_once(": ").map_or(error, |(_, detail)| detail);
-        let detail = detail.replace('\n', " ");
-        let short = format!("{prefix}: {}", detail.chars().take(64).collect::<String>());
-        self.feedback(&short);
+        self.note.error(menu_error(prefix, error), false);
+    }
+
+    fn report_break_error(&mut self, prefix: &str, error: &str) {
+        eprintln!("{prefix}: {error}");
+        self.note.error(menu_error(prefix, error), true);
+    }
+
+    fn report_config_error(&mut self, prefix: &str, error: &str) {
+        eprintln!("{prefix}: {error}");
+        self.note.config_error(menu_error(
+            prefix,
+            config_error_detail(&self.config_path, error),
+        ));
     }
 
     fn open_config(&self) {
@@ -324,6 +402,7 @@ impl App {
     }
 
     fn launch(&mut self, id: u64) {
+        self.note.begin_break();
         let snapshot = Snapshot::from_config(&self.state.config);
         let (sender, receiver) = mpsc::channel();
         let cancel = self.state.begin(id, snapshot.clone(), sender);
@@ -371,23 +450,20 @@ impl ApplicationHandler<AppEvent> for App {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
             AppEvent::Menu(event) if event.id() == "quit" => self.quit(event_loop),
-            AppEvent::Menu(event) if !self.quitting => {
-                match event.id().0.as_str() {
-                    "pause" => {
-                        self.state.toggle_pause(Instant::now());
-                    }
-                    "restart" => {
-                        self.state.restart(Instant::now());
-                    }
-                    "reload" => match self.state.reload(&self.config_path) {
-                        Ok(()) => self.feedback("Settings reloaded"),
-                        Err(error) => self.report_error("Reload failed", &error),
-                    },
-                    "open" => self.open_config(),
-                    _ => {}
+            AppEvent::Menu(event) if !self.quitting => match event.id().0.as_str() {
+                "pause" => {
+                    self.state.toggle_pause(Instant::now());
                 }
-                self.refresh_menu(Instant::now());
-            }
+                "restart" => {
+                    self.state.restart(Instant::now());
+                }
+                "reload" => match self.state.reload(&self.config_path) {
+                    Ok(()) => self.note.reloaded(),
+                    Err(error) => self.report_config_error("Reload failed", &error),
+                },
+                "open" => self.open_config(),
+                _ => {}
+            },
             AppEvent::Menu(_) => {}
             AppEvent::Ready(id) => {
                 if !self.quitting {
@@ -410,9 +486,8 @@ impl ApplicationHandler<AppEvent> for App {
                         self.state.active = None;
                         event_loop.exit();
                     }
-                } else {
-                    self.state.finish(id, action, Instant::now());
-                    self.refresh_menu(Instant::now());
+                } else if let Some(Err(error)) = self.state.finish(id, action, Instant::now()) {
+                    self.report_break_error("Break failed", &error);
                 }
             }
             AppEvent::Opened(result) => match result {
@@ -421,10 +496,11 @@ impl ApplicationHandler<AppEvent> for App {
             },
             AppEvent::MediaPaused(result) => {
                 if let Err(error) = result {
-                    self.report_error("Media pause failed", &error);
+                    self.report_break_error("Media pause failed", &error);
                 }
             }
         }
+        self.refresh_menu(Instant::now());
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
@@ -823,9 +899,19 @@ fn run_child(
     }
 }
 
+fn initial_config(path: &Path) -> (Config, Option<String>) {
+    match config::load(path) {
+        Ok(config) => (config, None),
+        Err(error) => {
+            eprintln!("Using default settings: {error}");
+            (Config::default(), Some(error.to_string()))
+        }
+    }
+}
+
 pub fn run(config_path: &Path) -> Result<(), String> {
     let config_path = std::path::absolute(config_path).map_err(|error| error.to_string())?;
-    let config = config::load(&config_path).map_err(|error| error.to_string())?;
+    let (config, startup_config_error) = initial_config(&config_path);
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
     let mut builder = EventLoop::<AppEvent>::with_user_event();
     #[cfg(target_os = "macos")]
@@ -856,6 +942,8 @@ pub fn run(config_path: &Path) -> Result<(), String> {
         config_path,
         tray: None,
         menu: None,
+        note: MenuNote::default(),
+        startup_config_error,
         quitting: false,
         error: None,
     };
@@ -887,7 +975,105 @@ mod tests {
         timing::Tick,
     };
 
-    use super::{AppState, ChildObservation, LineEvent, WorkerTimeouts, read_line, run_child};
+    use super::{
+        AppState, ChildObservation, LineEvent, MenuNote, WorkerTimeouts, config_error_detail,
+        initial_config, menu_error, read_line, run_child,
+    };
+
+    #[test]
+    fn config_menu_errors_survive_feedback_and_breaks_until_successful_reload() {
+        for prefix in ["Config error", "Reload failed"] {
+            let mut note = MenuNote::default();
+            let diagnostic = format!("{prefix}: interval_minutes: must be between 1 and 1440");
+            note.config_error(diagnostic.clone());
+            note.feedback("Configuration opened");
+            assert_eq!(note.current, diagnostic);
+            note.error("Break failed: overlay process failed".into(), true);
+            assert!(note.current.starts_with("Break failed:"));
+            note.begin_break();
+            assert_eq!(note.current, diagnostic);
+            note.error("Open failed: open exited with exit status: 1".into(), false);
+            assert!(note.current.starts_with("Open failed:"));
+            note.begin_break();
+            assert_eq!(note.current, diagnostic);
+            note.reloaded();
+            assert_eq!(note.current, "Settings reloaded");
+            note.feedback("Configuration opened");
+            assert_eq!(note.current, "Configuration opened");
+        }
+    }
+
+    #[test]
+    fn break_menu_errors_clear_at_the_next_break() {
+        let mut note = MenuNote::default();
+        for prefix in ["Break failed", "Media pause failed"] {
+            note.error(format!("{prefix}: test failure"), true);
+            note.begin_break();
+            assert_eq!(note.current, "Settings loaded");
+        }
+        note.feedback("Settings reloaded");
+        note.begin_break();
+        assert_eq!(note.current, "Settings reloaded");
+        note.error("Open failed: test failure".into(), false);
+        note.begin_break();
+        assert_eq!(note.current, "Open failed: test failure");
+    }
+
+    #[test]
+    fn menu_errors_strip_only_the_matching_config_path() {
+        let path = std::path::Path::new("/tmp/settings: test/config.yaml");
+        let config_error = format!("{}: interval_minutes: invalid", path.display());
+        assert_eq!(
+            menu_error("Config error", config_error_detail(path, &config_error)),
+            "Config error: interval_minutes: invalid"
+        );
+        let process_error = "exit status: 1: permission denied\ntry again";
+        assert_eq!(config_error_detail(path, process_error), process_error);
+        assert_eq!(
+            menu_error("Open failed", process_error),
+            "Open failed: exit status: 1: permission denied try again"
+        );
+        assert_eq!(
+            config_error_detail(path, "/tmp/other.yaml: interval_minutes: invalid"),
+            "/tmp/other.yaml: interval_minutes: invalid"
+        );
+    }
+
+    #[test]
+    fn initial_config_falls_back_to_defaults_on_invalid_yaml() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "break-reminder-initial-config-{}-{suffix}.yaml",
+            std::process::id()
+        ));
+        fs::write(&path, "interval_minutes: 0\n").unwrap();
+        let (config, error) = initial_config(&path);
+        assert_eq!(config, config::Config::default());
+        assert!(error.unwrap().contains("interval_minutes"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "interval_minutes: 0\n");
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn initial_config_uses_valid_settings_without_an_error() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "break-reminder-valid-initial-config-{}-{suffix}.yaml",
+            std::process::id()
+        ));
+        fs::write(&path, "interval_minutes: 25\n").unwrap();
+        let (config, error) = initial_config(&path);
+        assert_eq!(config.interval, Duration::from_secs(25 * 60));
+        assert_eq!(config, config::load(&path).unwrap());
+        assert!(error.is_none());
+        fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn protocol_lines_are_bounded_and_newline_delimited() {
@@ -921,7 +1107,7 @@ mod tests {
             assert_eq!(app.ready(id, due, || pauses += 1), connected);
             assert_eq!(pauses, usize::from(enabled && connected));
             assert!(!app.ready(id, due, || pauses += 1));
-            assert!(app.finish(id, Ok((Action::Skip, due)), due));
+            assert_eq!(app.finish(id, Ok((Action::Skip, due)), due), Some(Ok(())));
             assert!(!app.ready(id, due, || pauses += 1));
             assert_eq!(pauses, usize::from(enabled && connected));
             drop(receiver);
@@ -944,11 +1130,14 @@ mod tests {
 
         assert!(app.ready(id, start + Duration::from_secs(63), || {}));
         assert_eq!(receiver.try_recv(), Ok(()));
-        assert!(app.finish(
-            id,
-            Ok((Action::Postpone(1), start + Duration::from_secs(65))),
-            start + Duration::from_secs(70),
-        ));
+        assert_eq!(
+            app.finish(
+                id,
+                Ok((Action::Postpone(1), start + Duration::from_secs(65))),
+                start + Duration::from_secs(70),
+            ),
+            Some(Ok(()))
+        );
         assert_eq!(app.timer.deadline(), Some(start + Duration::from_secs(965)));
     }
 
@@ -1065,11 +1254,14 @@ mod tests {
         assert_eq!(app.config.postpone[1], Duration::from_secs(420));
         assert!(app.ready(id, start + Duration::from_secs(122), || {}));
         assert_eq!(receiver.try_recv(), Ok(()));
-        assert!(app.finish(
-            id,
-            Ok((Action::Postpone(1), start + Duration::from_secs(123))),
-            start + Duration::from_secs(123)
-        ));
+        assert_eq!(
+            app.finish(
+                id,
+                Ok((Action::Postpone(1), start + Duration::from_secs(123))),
+                start + Duration::from_secs(123)
+            ),
+            Some(Ok(()))
+        );
         assert_eq!(
             app.timer.deadline(),
             Some(start + Duration::from_secs(1323))
@@ -1136,11 +1328,14 @@ mod tests {
             app.begin(id, snapshot, sender);
             assert!(app.ready(id, start + Duration::from_secs(ready), || {}));
             assert_eq!(receiver.try_recv(), Ok(()));
-            assert!(app.finish(
-                id,
-                Ok((action, start + Duration::from_secs(action_at))),
-                start + Duration::from_secs(action_at),
-            ));
+            assert_eq!(
+                app.finish(
+                    id,
+                    Ok((action, start + Duration::from_secs(action_at))),
+                    start + Duration::from_secs(action_at),
+                ),
+                Some(Ok(()))
+            );
             assert_eq!(
                 app.timer.deadline(),
                 Some(start + Duration::from_secs(next_due))
@@ -1176,19 +1371,61 @@ mod tests {
         let (sender, _receiver) = mpsc::channel();
         app.begin(id, Snapshot::from_config(&app.config), sender);
         assert!(app.ready(id, start + Duration::from_secs(61), || {}));
-        assert!(app.finish(
-            id,
-            Ok((Action::Elapsed, start + Duration::from_secs(62))),
-            start + Duration::from_secs(63),
-        ));
+        let error = app
+            .finish(
+                id,
+                Ok((Action::Elapsed, start + Duration::from_secs(62))),
+                start + Duration::from_secs(63),
+            )
+            .unwrap()
+            .unwrap_err();
+        assert!(error.contains("display deadline"));
         assert_eq!(app.timer.deadline(), Some(start + Duration::from_secs(123)));
-        assert!(!app.finish(
-            id,
-            Ok((Action::Postpone(0), start + Duration::from_secs(64))),
-            start + Duration::from_secs(65),
-        ));
+        assert!(
+            app.finish(
+                id,
+                Ok((Action::Postpone(0), start + Duration::from_secs(64))),
+                start + Duration::from_secs(65),
+            )
+            .is_none()
+        );
         assert!(!app.ready(id, start + Duration::from_secs(66), || {}));
         assert_eq!(app.timer.deadline(), Some(start + Duration::from_secs(123)));
+    }
+
+    #[test]
+    fn out_of_range_postpone_reports_failure_and_schedules_a_full_interval() {
+        let config = config::Config {
+            interval: Duration::from_secs(60),
+            ..config::Config::default()
+        };
+        let start = Instant::now();
+        let mut app = AppState::new(config, start);
+        let Some(Tick::LaunchOverlay(id)) = app.timer.tick(start + Duration::from_secs(60)) else {
+            panic!("break was not due");
+        };
+        let (sender, _receiver) = mpsc::channel();
+        app.begin(id, Snapshot::from_config(&app.config), sender);
+        assert!(
+            app.finish(
+                id + 1,
+                Ok((Action::Postpone(99), start + Duration::from_secs(61))),
+                start + Duration::from_secs(62),
+            )
+            .is_none()
+        );
+        assert!(app.active.is_some());
+        let error = app
+            .finish(
+                id,
+                Ok((Action::Postpone(99), start + Duration::from_secs(61))),
+                start + Duration::from_secs(62),
+            )
+            .unwrap()
+            .unwrap_err();
+        assert!(error.contains("POSTPONE index is out of range"));
+        assert!(app.active.is_none());
+        assert_eq!(app.timer.deadline(), Some(start + Duration::from_secs(122)));
     }
 
     #[test]
@@ -1306,11 +1543,15 @@ mod tests {
         };
         let (sender, _receiver) = mpsc::channel();
         app.begin(id, Snapshot::from_config(&app.config), sender);
-        assert!(app.finish(
-            id,
-            Err("cannot launch overlay".into()),
-            start + Duration::from_secs(61)
-        ));
+        let error = app
+            .finish(
+                id,
+                Err("cannot launch overlay".into()),
+                start + Duration::from_secs(61),
+            )
+            .unwrap()
+            .unwrap_err();
+        assert!(error.contains("cannot launch overlay"));
         assert_eq!(app.timer.deadline(), Some(start + Duration::from_secs(121)));
         assert_eq!(app.timer.tick(start + Duration::from_secs(62)), None);
     }
