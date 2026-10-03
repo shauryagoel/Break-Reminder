@@ -32,7 +32,7 @@ On macOS and X11/Linux, system sleep does not consume the remaining interval or 
 
 - Rust 2024 edition and standard-library timing. The complete app raises the package minimum from 1.89 to 1.95 for `reminder-window`.
 - Rust standard library `Duration` and `Instant` for interval deadlines and countdown calculations. No scheduler crate or wall-clock arithmetic.
-- The future windowless app shell uses [`winit` `ControlFlow::WaitUntil`](https://docs.rs/winit/latest/winit/event_loop/enum.ControlFlow.html) for an efficient wait between breaks, checks the deadline on event-loop wakes, and receives the overlay child's single terminal outcome through an event-loop proxy. It confirms or forces child closure before another launch. This integration belongs to `reminder-window`, not this module.
+- The windowless app shell in `src/app.rs` uses [`winit` `ControlFlow::WaitUntil`](https://docs.rs/winit/latest/winit/event_loop/enum.ControlFlow.html) for an efficient wait between breaks, checks the deadline on event-loop wakes, and receives the overlay child's single terminal outcome through an event-loop proxy. It confirms or forces child closure before another launch. This integration belongs to `reminder-window`, not this module.
 
 ## Commands
 
@@ -48,7 +48,7 @@ cargo build --release
 
 ```text
 src/timing.rs    Pure timer state and countdown calculation, with unit tests
-src/main.rs      Declares the module; app-shell wiring follows in reminder-window
+src/app.rs       App-shell wiring: menu actions, overlay launch, and outcomes
 ```
 
 ## Code style

@@ -4,7 +4,7 @@
 
 Provide one human-editable YAML file for all first-release break timing, media-pause, and appearance settings. A user can change the reminder interval, display duration, visible postpone choices, optional media pause, title, message, colors, background transparency, and optional image without recompiling. The module returns validated values to `reminder-timing` and `reminder-window`; it does not own either UI or scheduling.
 
-Default path on macOS and X11: `~/.config/break-reminder/config.yaml`. `--config PATH` overrides this path for development and testing; a missing file at either path gets the sample. The approved [capability map](CAPABILITY-MAP.md) defines this module as a dependency of the other two.
+Default path on macOS and X11: `~/.config/break-reminder/config.yaml`. `--config PATH` overrides this path for development and testing. When the app starts, a missing file at either path gets the sample; `--check-config` reports a missing file as an error and creates nothing. The approved [capability map](CAPABILITY-MAP.md) defines this module as a dependency of the other two.
 
 ## YAML contract
 
@@ -31,9 +31,9 @@ Any omitted field uses its sample default. Unknown or duplicate keys and unsuppo
 
 On first launch, create the directory and sample file only if the file is absent. Never overwrite an existing file. Remove a newly created sample if writing it fails. Parsing or validation errors report the file path and offending field or YAML location. `load` returns a complete validated config or an error. At app startup, a load error falls back to the sample defaults and reports the error in the menu and on stderr; the configuration diagnostic remains until a successful reload. On reload, the caller keeps its previous config if loading fails. `--check-config` remains strict and exits nonzero on a load error.
 
-`appearance.background_transparency_percent` is an integer from 0 to 100 inclusive. It defaults to 15 when omitted, preserving the current appearance of existing files. Zero makes the background opaque and 100 makes it fully transparent; text, images, and controls keep their own opacity. A valid reload applies the setting to future breaks; an already open reminder retains its launch-time value. The parent-to-overlay snapshot carries and independently validates the same percentage, defaulting omitted snapshot values to 15.
+`appearance.background_transparency_percent` is an integer from 0 to 100 inclusive. It defaults to 15 when omitted, preserving the current appearance of existing files. Zero makes the background opaque and 100 makes it fully transparent; text, images, and controls keep their own opacity. A valid reload applies the setting to future breaks; an already open reminder retains its launch-time value. The parent-to-overlay snapshot carries and independently validates the same percentage.
 
-`pause_media` is a boolean, defaulting to `false` even in existing files that omit it. The setting is captured when each break launches; reload affects future breaks. See [README Settings](README.md#settings) for supported platforms, media behavior, permissions, and diagnostics.
+`pause_media` is a boolean, defaulting to `false` even in existing files that omit it. The setting is captured when each break launches; reload affects future breaks. See [the guide](docs/guide.md#media-pause) for supported platforms, media behavior, permissions, and diagnostics.
 
 ## Tech stack
 
@@ -43,8 +43,6 @@ On first launch, create the directory and sample file only if the file is absent
 - Rust standard library for paths, file creation, and post-parse validation. No config framework, YAML value tree, or file watcher.
 
 ## Commands
-
-These commands become executable once this module is implemented:
 
 ```sh
 cargo run -- --check-config

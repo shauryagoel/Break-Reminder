@@ -20,7 +20,7 @@ A persistent eframe process would have less process coordination but risks an un
 - The YAML file configures interval, duration, an ordered list of visible postpone delays, title, message, colors, and an optional local image with fit mode. A missing config gets a sample file. Reloading invalid YAML keeps the last valid settings and reports the error in the menu.
 - Every monitor receives a borderless window sized to its full screen frame, including the menu bar and Dock area, with synchronized countdown and controls. Countdown starts when the windows are visible, and the first action dismisses them all; a later process-exit event cannot replace that action. The window must not enter a native fullscreen Space.
 - The default layout has a calm dark background, centered message and optional image, prominent countdown, and clear Skip and postpone controls. It must scale to laptop and external-display sizes without clipping.
-- The menu displays the next break and provides Pause/Resume, Restart Timer directly below it, Reload Config, Open Config, and Quit.
+- The menu displays the next break and provides Pause/Resume, Restart Timer directly below it, Increase Timer, Take Break Now, Reload Config, Open Config, and Quit.
 
 ## Platform and verification risks
 
