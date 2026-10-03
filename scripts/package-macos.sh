@@ -32,4 +32,6 @@ cat > "$bundle/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 plutil -lint "$bundle/Contents/Info.plist"
+codesign --force --sign "${BREAK_REMINDER_SIGN_IDENTITY:--}" "$bundle"
+codesign --verify --strict "$bundle"
 printf '%s\n' "$bundle"

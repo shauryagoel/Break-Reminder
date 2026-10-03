@@ -30,7 +30,7 @@ check_destination() {
 }
 
 ensure_stopped() {
-    if pgrep -x break-reminder >/dev/null; then
+    if pgrep -u "$(id -u)" -x break-reminder >/dev/null; then
         fail "Quit Break Reminder from its menu before installing or uninstalling."
     else
         pgrep_status=$?
@@ -61,12 +61,15 @@ case "$install_os" in
         validate_path XDG_CONFIG_HOME "$config_home"
         application="$HOME/.local/bin/break-reminder"
         launcher="$data_home/applications/com.breakreminder.app.desktop"
+        icon="$data_home/icons/com.breakreminder.app.png"
         startup="$config_home/autostart/com.breakreminder.app.desktop"
         check_destination "$application"
         check_destination "$launcher"
+        check_destination "$icon"
         check_destination "$startup"
         [ ! -e "$application" ] || [ -f "$application" ] || fail "Expected executable file: $application"
         [ ! -e "$launcher" ] || [ -f "$launcher" ] || fail "Expected launcher file: $launcher"
+        [ ! -e "$icon" ] || [ -f "$icon" ] || fail "Expected icon file: $icon"
         ;;
 esac
 [ ! -e "$startup" ] || [ -f "$startup" ] || fail "Expected startup file: $startup"

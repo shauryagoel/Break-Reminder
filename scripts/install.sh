@@ -13,12 +13,16 @@ ensure_stopped
 
 mkdir -p "$(dirname -- "$application")" "$(dirname -- "$startup")"
 staging=$(mktemp -d "$(dirname -- "$application")/.break-reminder.XXXXXX")
+icon_staging=
 cleanup() {
     if [ -d "$staging/previous.app" ] && [ ! -e "$application" ]; then
         mv -- "$staging/previous.app" "$application" || {
             printf 'Could not restore previous bundle; recover it from %s/previous.app\n' "$staging" >&2
             return 2
         }
+    fi
+    if [ -n "$icon_staging" ]; then
+        rm -f -- "$icon_staging"
     fi
     rm -rf -- "$staging"
 }
@@ -60,20 +64,26 @@ PLIST
         printf 'Installed: %s\nStarts at next graphical login. Launch now: open "$HOME/Applications/Break Reminder.app"\nLogin errors: %s\n' "$application" "$log_path"
         ;;
     Linux)
-        mkdir -p "$(dirname -- "$launcher")"
+        mkdir -p "$(dirname -- "$launcher")" "$(dirname -- "$icon")"
         cp target/release/break-reminder "$staging/break-reminder"
         chmod 755 "$staging/break-reminder"
+        icon_staging=$(mktemp "$(dirname -- "$icon")/.break-reminder-icon.XXXXXX")
+        cp assets/app-icon.png "$icon_staging"
+        chmod 644 "$icon_staging"
         cat > "$staging/launcher" <<DESKTOP
 [Desktop Entry]
 Type=Application
 Name=Break Reminder
 Comment=Regular screen break reminders
 Exec="$application"
+Icon=$icon
 Terminal=false
 Categories=Utility;
 DESKTOP
         chmod 644 "$staging/launcher"
         ensure_stopped
+        mv -f -- "$icon_staging" "$icon"
+        icon_staging=
         mv -f -- "$staging/break-reminder" "$application"
         cp "$staging/launcher" "$launcher"
         cp "$staging/launcher" "$startup"

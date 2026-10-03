@@ -6,7 +6,7 @@ project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 
 case "$install_os" in
     Darwin) rm -rf -- "$application" ;;
-    Linux) rm -f -- "$application" "$launcher" ;;
+    Linux) rm -f -- "$application" "$launcher" "$icon" ;;
 esac
 rm -f -- "$startup"
 printf '%s\n' 'Break Reminder uninstalled. Your configuration and logs have been preserved.'
