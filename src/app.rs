@@ -13,7 +13,7 @@ use std::{
 
 use tray_icon::{
     Icon, TrayIcon, TrayIconBuilder,
-    menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
+    menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu},
 };
 use winit::{
     application::ApplicationHandler,
@@ -96,6 +96,25 @@ impl AppState {
         self.active.is_none() && self.timer.restart(now)
     }
 
+    fn increase(&mut self, minutes: u64, now: Instant) -> bool {
+        let Some(&delay) = self
+            .config
+            .postpone
+            .iter()
+            .find(|delay| delay.as_secs() / 60 == minutes)
+        else {
+            return false;
+        };
+        self.active.is_none() && self.timer.increase(delay, now)
+    }
+
+    fn take_break_now(&mut self) -> Option<Tick> {
+        if self.active.is_some() {
+            return None;
+        }
+        self.timer.take_break_now()
+    }
+
     fn status_text(&self, now: Instant) -> String {
         if self.active.is_some() {
             return "Break in progress".into();
@@ -107,26 +126,24 @@ impl AppState {
             return "Break in progress".into();
         };
         let remaining = deadline.saturating_duration_since(now);
-        let minutes = remaining.as_nanos().div_ceil(60_000_000_000);
-        if minutes == 0 {
+        if remaining.is_zero() {
             "Next break now".into()
-        } else if minutes == 1 {
-            "Next break in 1 min".into()
         } else {
-            format!("Next break in {minutes} min")
+            let seconds = remaining.as_nanos().div_ceil(1_000_000_000);
+            format!("Next break in {}:{:02}", seconds / 60, seconds % 60)
         }
     }
 
     fn next_status_refresh(&self, now: Instant) -> Option<Instant> {
         let deadline = self.timer.deadline()?;
-        let minutes = deadline
+        let seconds = deadline
             .saturating_duration_since(now)
             .as_nanos()
-            .div_ceil(60_000_000_000);
-        if minutes == 0 {
+            .div_ceil(1_000_000_000);
+        if seconds == 0 {
             return Some(deadline);
         }
-        Some(deadline - Duration::from_secs((minutes as u64 - 1) * 60))
+        Some(deadline - Duration::from_secs(seconds as u64 - 1))
     }
 
     fn ready(&mut self, id: u64, now: Instant, pause_media: impl FnOnce()) -> bool {
@@ -257,14 +274,29 @@ struct TrayMenu {
     status: MenuItem,
     pause: MenuItem,
     restart: MenuItem,
+    increase: Submenu,
+    take_break: MenuItem,
     note: MenuItem,
 }
 
 impl TrayMenu {
-    fn new() -> Result<(Self, Menu), String> {
+    fn new(postpone: &[Duration]) -> Result<(Self, Menu), String> {
         let status = MenuItem::with_id("status", "Next break", false, None);
         let pause = MenuItem::with_id("pause", "Pause", true, None);
         let restart = MenuItem::with_id("restart", "Restart Timer", true, None);
+        let increase = Submenu::with_id("increase", "Increase Timer", true);
+        for delay in postpone {
+            let minutes = delay.as_secs() / 60;
+            increase
+                .append(&MenuItem::with_id(
+                    format!("increase_{minutes}"),
+                    format!("Add {minutes} min"),
+                    true,
+                    None,
+                ))
+                .map_err(|error| error.to_string())?;
+        }
+        let take_break = MenuItem::with_id("take_break", "Take Break Now", true, None);
         let reload = MenuItem::with_id("reload", "Reload Config", true, None);
         let open = MenuItem::with_id("open", "Open Config", true, None);
         let note = MenuItem::with_id("note", "Settings loaded", false, None);
@@ -273,6 +305,8 @@ impl TrayMenu {
             &status,
             &pause,
             &restart,
+            &increase,
+            &take_break,
             &PredefinedMenuItem::separator(),
             &reload,
             &open,
@@ -286,6 +320,8 @@ impl TrayMenu {
                 status,
                 pause,
                 restart,
+                increase,
+                take_break,
                 note,
             },
             menu,
@@ -295,7 +331,7 @@ impl TrayMenu {
 
 impl App {
     fn initialize_tray(&mut self) -> Result<(), String> {
-        let (items, menu) = TrayMenu::new()?;
+        let (items, menu) = TrayMenu::new(&self.state.config.postpone)?;
         let icon = tray_icon()?;
         self.tray = Some(
             TrayIconBuilder::new()
@@ -338,10 +374,13 @@ impl App {
             menu.pause.set_text(pause);
         }
         let enabled = !self.quitting && self.state.active.is_none();
-        for item in [&menu.pause, &menu.restart] {
+        for item in [&menu.pause, &menu.restart, &menu.take_break] {
             if item.is_enabled() != enabled {
                 item.set_enabled(enabled);
             }
+        }
+        if menu.increase.is_enabled() != enabled {
+            menu.increase.set_enabled(enabled);
         }
     }
 
@@ -457,11 +496,30 @@ impl ApplicationHandler<AppEvent> for App {
                 "restart" => {
                     self.state.restart(Instant::now());
                 }
+                "take_break" => {
+                    if let Some(Tick::LaunchOverlay(id)) = self.state.take_break_now() {
+                        self.launch(id);
+                    }
+                }
                 "reload" => match self.state.reload(&self.config_path) {
-                    Ok(()) => self.note.reloaded(),
+                    Ok(()) => match TrayMenu::new(&self.state.config.postpone) {
+                        Ok((items, menu)) => {
+                            if let Some(tray) = &self.tray {
+                                tray.set_menu(Some(Box::new(menu)));
+                            }
+                            self.menu = Some(items);
+                            self.note.reloaded();
+                        }
+                        Err(error) => self.report_error("Menu update failed", &error),
+                    },
                     Err(error) => self.report_config_error("Reload failed", &error),
                 },
                 "open" => self.open_config(),
+                id if id.starts_with("increase_") => {
+                    if let Ok(minutes) = id[9..].parse() {
+                        self.state.increase(minutes, Instant::now());
+                    }
+                }
                 _ => {}
             },
             AppEvent::Menu(_) => {}
@@ -1147,14 +1205,38 @@ mod tests {
         config.interval = Duration::from_secs(120);
         let start = Instant::now();
         let mut app = AppState::new(config, start);
-        assert_eq!(app.status_text(start), "Next break in 2 min");
+        assert_eq!(app.status_text(start), "Next break in 2:00");
         assert_eq!(
             app.next_status_refresh(start),
-            Some(start + Duration::from_secs(60))
+            Some(start + Duration::from_secs(1))
         );
         assert_eq!(
             app.status_text(start + Duration::from_secs(60)),
-            "Next break in 1 min"
+            "Next break in 1:00"
+        );
+        assert_eq!(
+            app.status_text(start + Duration::from_millis(1)),
+            "Next break in 2:00"
+        );
+        assert_eq!(
+            app.status_text(start + Duration::from_secs(1)),
+            "Next break in 1:59"
+        );
+        assert_eq!(
+            app.next_status_refresh(start + Duration::from_millis(1)),
+            Some(start + Duration::from_secs(1))
+        );
+        assert_eq!(
+            app.status_text(start + Duration::from_secs(119)),
+            "Next break in 0:01"
+        );
+        assert_eq!(
+            app.status_text(start + Duration::from_secs(120)),
+            "Next break now"
+        );
+        assert_eq!(
+            app.status_text(start + Duration::from_secs(121)),
+            "Next break now"
         );
 
         assert!(app.toggle_pause(start + Duration::from_secs(70)));
@@ -1174,6 +1256,10 @@ mod tests {
             app.status_text(start + Duration::from_secs(550)),
             "Break in progress"
         );
+        assert_eq!(
+            app.next_status_refresh(start + Duration::from_secs(550)),
+            None
+        );
         assert!(!app.toggle_pause(start + Duration::from_secs(551)));
     }
 
@@ -1187,11 +1273,11 @@ mod tests {
         assert_eq!(app.timer.deadline(), Some(start + Duration::from_secs(190)));
         assert_eq!(
             app.status_text(start + Duration::from_secs(70)),
-            "Next break in 2 min"
+            "Next break in 2:00"
         );
         assert_eq!(
             app.next_status_refresh(start + Duration::from_secs(70)),
-            Some(start + Duration::from_secs(130))
+            Some(start + Duration::from_secs(71))
         );
 
         assert!(app.toggle_pause(start + Duration::from_secs(80)));
@@ -1218,6 +1304,64 @@ mod tests {
                 .display_remaining(start + Duration::from_secs(563)),
             Some(app.config.display - Duration::from_secs(1))
         );
+    }
+
+    #[test]
+    fn menu_increase_uses_configured_minutes_and_preserves_pause() {
+        let config = config::load("assets/default-config.yaml".as_ref()).unwrap();
+        let start = Instant::now();
+        let interval = config.interval;
+        let mut app = AppState::new(config, start);
+        assert!(!app.increase(0, start));
+        assert!(!app.increase(7, start));
+        for minutes in [10, 15] {
+            assert!(app.increase(minutes, start + Duration::from_secs(20)));
+        }
+        assert_eq!(
+            app.timer.deadline(),
+            Some(start + interval + Duration::from_secs(1500))
+        );
+        assert!(app.toggle_pause(start + Duration::from_secs(30)));
+        app.config.postpone = vec![Duration::from_secs(300)];
+        assert!(!app.increase(10, start + Duration::from_secs(40)));
+        assert!(app.increase(5, start + Duration::from_secs(40)));
+        assert!(app.timer.is_paused());
+        assert!(app.toggle_pause(start + Duration::from_secs(500)));
+        assert_eq!(
+            app.timer.deadline(),
+            Some(start + interval + Duration::from_secs(2270))
+        );
+    }
+
+    #[test]
+    fn menu_take_break_now_reuses_ready_and_finish_and_resets_the_interval() {
+        for paused in [false, true] {
+            let config = config::load("assets/default-config.yaml".as_ref()).unwrap();
+            let start = Instant::now();
+            let mut app = AppState::new(config, start);
+            if paused {
+                assert!(app.toggle_pause(start));
+            }
+            let Some(Tick::LaunchOverlay(id)) = app.take_break_now() else {
+                panic!("manual break did not launch");
+            };
+            let (sender, receiver) = mpsc::channel();
+            app.begin(id, Snapshot::from_config(&app.config), sender);
+            assert_eq!(app.take_break_now(), None);
+            assert!(!app.increase(10, start));
+            assert_eq!(app.next_status_refresh(start), None);
+            assert!(app.ready(id, start + Duration::from_secs(2), || {}));
+            assert_eq!(receiver.try_recv(), Ok(()));
+            assert_eq!(app.take_break_now(), None);
+            assert!(!app.increase(15, start));
+            let finish = start + Duration::from_secs(2) + app.config.display;
+            assert_eq!(
+                app.finish(id, Ok((Action::Elapsed, finish)), finish),
+                Some(Ok(()))
+            );
+            assert!(!app.timer.is_paused());
+            assert_eq!(app.timer.deadline(), Some(finish + app.config.interval));
+        }
     }
 
     #[test]

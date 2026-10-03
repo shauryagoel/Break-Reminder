@@ -82,18 +82,34 @@ impl Timer {
         true
     }
 
+    pub fn increase(&mut self, delay: Duration, now: Instant) -> bool {
+        match &mut self.state {
+            State::Waiting(deadline) => {
+                *deadline = now + deadline.saturating_duration_since(now) + delay;
+            }
+            State::Paused(remaining) => *remaining += delay,
+            State::Launching { .. } | State::Showing { .. } => return false,
+        }
+        true
+    }
+
     pub fn tick(&mut self, now: Instant) -> Option<Tick> {
         match self.state {
-            State::Waiting(deadline) if now >= deadline => {
-                self.next_id = self.next_id.checked_add(1).expect("overlay ID exhausted");
-                self.state = State::Launching {
-                    id: self.next_id,
-                    display: self.display,
-                };
-                Some(Tick::LaunchOverlay(self.next_id))
-            }
+            State::Waiting(deadline) if now >= deadline => self.take_break_now(),
             _ => None,
         }
+    }
+
+    pub fn take_break_now(&mut self) -> Option<Tick> {
+        if !matches!(self.state, State::Waiting(_) | State::Paused(_)) {
+            return None;
+        }
+        self.next_id = self.next_id.checked_add(1).expect("overlay ID exhausted");
+        self.state = State::Launching {
+            id: self.next_id,
+            display: self.display,
+        };
+        Some(Tick::LaunchOverlay(self.next_id))
     }
 
     pub fn visible(&mut self, id: u64, now: Instant) -> bool {
@@ -323,6 +339,127 @@ mod tests {
         assert!(timer.visible(1, start + seconds(242)));
         assert!(!timer.pause(start + seconds(243)));
         assert!(!timer.resume(start + seconds(243)));
+    }
+
+    #[test]
+    fn increase_adds_to_waiting_remaining_time_and_clamps_an_overdue_timer() {
+        let start = Instant::now();
+        let mut timer = Timer::new(seconds(60), seconds(30), start);
+        assert!(timer.increase(seconds(600), start + seconds(20)));
+        assert_eq!(timer.deadline(), Some(start + seconds(660)));
+        assert!(timer.increase(seconds(900), start + seconds(30)));
+        assert_eq!(timer.deadline(), Some(start + seconds(1_560)));
+        assert!(timer.increase(seconds(600), start + seconds(1_600)));
+        assert_eq!(timer.deadline(), Some(start + seconds(2_200)));
+        assert_eq!(timer.tick(start + seconds(2_199)), None);
+        assert_eq!(
+            timer.tick(start + seconds(2_200)),
+            Some(Tick::LaunchOverlay(1))
+        );
+    }
+
+    #[test]
+    fn increase_adds_to_frozen_remaining_time_without_resuming() {
+        let start = Instant::now();
+        let mut timer = Timer::new(seconds(60), seconds(30), start);
+        assert!(timer.pause(start + seconds(20)));
+        assert!(timer.increase(seconds(600), start + seconds(100)));
+        assert!(timer.increase(seconds(900), start + seconds(200)));
+        assert!(timer.is_paused());
+        assert_eq!(timer.deadline(), None);
+        assert_eq!(timer.tick(start + seconds(300)), None);
+        assert!(timer.resume(start + seconds(300)));
+        assert_eq!(timer.deadline(), Some(start + seconds(1_840)));
+    }
+
+    #[test]
+    fn increase_does_not_change_launching_or_visible_breaks() {
+        let start = Instant::now();
+        let mut timer = Timer::new(seconds(60), seconds(30), start);
+        assert_eq!(
+            timer.tick(start + seconds(60)),
+            Some(Tick::LaunchOverlay(1))
+        );
+        assert!(!timer.increase(seconds(600), start + seconds(61)));
+        assert!(timer.visible(1, start + seconds(62)));
+        assert!(!timer.increase(seconds(900), start + seconds(63)));
+        assert_eq!(
+            timer.display_remaining(start + seconds(63)),
+            Some(seconds(29))
+        );
+        assert!(timer.complete(1, Completion::Skip, start + seconds(64)));
+        assert_eq!(timer.deadline(), Some(start + seconds(124)));
+    }
+
+    #[test]
+    fn take_break_now_launches_from_waiting_or_paused_and_waits_for_visibility() {
+        let start = Instant::now();
+        for paused in [false, true] {
+            let mut timer = Timer::new(seconds(60), seconds(30), start);
+            if paused {
+                assert!(timer.pause(start + seconds(10)));
+            }
+            timer.reload(seconds(120), seconds(45));
+            assert_eq!(timer.take_break_now(), Some(Tick::LaunchOverlay(1)));
+            assert!(!timer.is_paused());
+            assert_eq!(timer.deadline(), None);
+            assert_eq!(timer.display_remaining(start + seconds(20)), None);
+            assert!(!timer.complete(1, Completion::Elapsed, start + seconds(60)));
+            assert!(timer.visible(1, start + seconds(70)));
+            assert_eq!(
+                timer.display_remaining(start + seconds(70)),
+                Some(seconds(45))
+            );
+            assert!(!timer.complete(1, Completion::Elapsed, start + seconds(114)));
+            assert!(timer.complete(1, Completion::Elapsed, start + seconds(115)));
+            assert_eq!(timer.deadline(), Some(start + seconds(235)));
+        }
+    }
+
+    #[test]
+    fn take_break_now_rejects_active_breaks_and_keeps_overlay_ids_unique() {
+        let start = Instant::now();
+        let mut timer = Timer::new(seconds(60), seconds(30), start);
+        assert_eq!(timer.take_break_now(), Some(Tick::LaunchOverlay(1)));
+        assert_eq!(timer.take_break_now(), None);
+        assert!(timer.visible(1, start + seconds(10)));
+        assert_eq!(timer.take_break_now(), None);
+        assert_eq!(
+            timer.display_remaining(start + seconds(11)),
+            Some(seconds(29))
+        );
+        assert!(timer.complete(1, Completion::Skip, start + seconds(12)));
+        assert_eq!(timer.take_break_now(), Some(Tick::LaunchOverlay(2)));
+        assert!(!timer.visible(1, start + seconds(13)));
+        assert!(!timer.complete(1, Completion::Closed, start + seconds(13)));
+        assert!(timer.complete(2, Completion::Failed, start + seconds(14)));
+        assert_eq!(
+            timer.tick(start + seconds(74)),
+            Some(Tick::LaunchOverlay(3))
+        );
+    }
+
+    #[test]
+    fn take_break_now_uses_normal_skip_postpone_failure_and_close_schedules() {
+        let start = Instant::now();
+        for (completion, delay, visible) in [
+            (Completion::Skip, 60, true),
+            (Completion::Postpone(seconds(600)), 600, true),
+            (Completion::Failed, 60, false),
+            (Completion::Closed, 60, true),
+        ] {
+            let mut timer = Timer::new(seconds(60), seconds(30), start);
+            assert!(timer.pause(start + seconds(10)));
+            assert_eq!(timer.take_break_now(), Some(Tick::LaunchOverlay(1)));
+            if visible {
+                assert!(timer.visible(1, start + seconds(20)));
+            }
+            assert!(timer.complete(1, completion, start + seconds(25)));
+            assert!(!timer.is_paused());
+            assert_eq!(timer.deadline(), Some(start + seconds(25 + delay)));
+            assert!(!timer.complete(1, Completion::Closed, start + seconds(26)));
+            assert_eq!(timer.deadline(), Some(start + seconds(25 + delay)));
+        }
     }
 
     #[test]
