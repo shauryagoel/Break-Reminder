@@ -2,7 +2,7 @@
 
 ## Objective
 
-Provide one human-editable YAML file for all first-release break timing, media-pause, and appearance settings. A user can change the reminder interval, display duration, visible postpone choices, optional media pause, title, message, colors, and optional image without recompiling. The module returns validated values to `reminder-timing` and `reminder-window`; it does not own either UI or scheduling.
+Provide one human-editable YAML file for all first-release break timing, media-pause, and appearance settings. A user can change the reminder interval, display duration, visible postpone choices, optional media pause, title, message, colors, background transparency, and optional image without recompiling. The module returns validated values to `reminder-timing` and `reminder-window`; it does not own either UI or scheduling.
 
 Default path on macOS and X11: `~/.config/break-reminder/config.yaml`. `--config PATH` overrides this path for development and testing; a missing file at either path gets the sample. The approved [capability map](CAPABILITY-MAP.md) defines this module as a dependency of the other two.
 
@@ -19,6 +19,7 @@ appearance:
   title: "Time for a break"
   message: "Step away from your screen and rest your eyes."
   background_color: "#101827"
+  background_transparency_percent: 15 # 0 is opaque; 100 is fully transparent.
   text_color: "#F8FAFC"
   accent_color: "#69D5B2"
   # image:
@@ -29,6 +30,8 @@ appearance:
 Any omitted field uses its sample default. Unknown or duplicate keys and unsupported YAML tags are errors, so misspelled settings do not silently disappear. A YAML document is limited to 64 KiB and may not load other files through YAML tags. All durations are integer values. `interval_minutes` and each `postpone_minutes` value must be 1–1440; `duration_seconds` must be 1–3600. The postpone list must contain 1–12 distinct values; order is preserved for button order. Colors use `#RRGGBB`. Title and message must be nonempty after trimming. The optional image path can be absolute, relative to the config directory, or start with `~/`; it is resolved to an absolute path. If an `image` mapping is present, `path` is required and nonempty; `fit` defaults to `contain` and may be `contain` or `cover`. A missing or unreadable image does not invalidate the configuration: `reminder-window` reports the failure and renders its no-image fallback so reminders continue.
 
 On first launch, create the directory and sample file only if the file is absent. Never overwrite an existing file. Remove a newly created sample if writing it fails. Parsing or validation errors report the file path and offending field or YAML location. `load` returns a complete validated config or an error. At app startup, a load error falls back to the sample defaults and reports the error in the menu and on stderr; the configuration diagnostic remains until a successful reload. On reload, the caller keeps its previous config if loading fails. `--check-config` remains strict and exits nonzero on a load error.
+
+`appearance.background_transparency_percent` is an integer from 0 to 100 inclusive. It defaults to 15 when omitted, preserving the current appearance of existing files. Zero makes the background opaque and 100 makes it fully transparent; text, images, and controls keep their own opacity. A valid reload applies the setting to future breaks; an already open reminder retains its launch-time value. The parent-to-overlay snapshot carries and independently validates the same percentage, defaulting omitted snapshot values to 15.
 
 `pause_media` is a boolean, defaulting to `false` even in existing files that omit it. The setting is captured when each break launches; reload affects future breaks. See [README Settings](README.md#settings) for supported platforms, media behavior, permissions, and diagnostics.
 

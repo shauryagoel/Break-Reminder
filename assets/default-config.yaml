@@ -6,6 +6,7 @@ appearance:
   title: "Time for a break"
   message: "Step away from your screen and rest your eyes."
   background_color: "#101827"
+  background_transparency_percent: 15 # 0 is opaque; 100 is fully transparent.
   text_color: "#F8FAFC"
   accent_color: "#69D5B2"
   # image:

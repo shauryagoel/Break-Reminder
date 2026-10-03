@@ -7,7 +7,8 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::config::{
-    Config, ImageFit, MAX_DURATION_SECONDS, MAX_POSTPONE_CHOICES, MAX_POSTPONE_MINUTES, valid_color,
+    Config, DEFAULT_BACKGROUND_TRANSPARENCY_PERCENT, ImageFit, MAX_DURATION_SECONDS,
+    MAX_POSTPONE_CHOICES, MAX_POSTPONE_MINUTES, valid_color,
 };
 
 const MAX_SNAPSHOT_BYTES: usize = 256 * 1024;
@@ -20,6 +21,8 @@ pub struct Snapshot {
     pub title: String,
     pub message: String,
     pub background_color: String,
+    #[serde(default = "default_background_transparency_percent")]
+    pub background_transparency_percent: u32,
     pub text_color: String,
     pub accent_color: String,
     pub image: Option<SnapshotImage>,
@@ -39,6 +42,10 @@ pub enum Fit {
     Cover,
 }
 
+fn default_background_transparency_percent() -> u32 {
+    DEFAULT_BACKGROUND_TRANSPARENCY_PERCENT
+}
+
 impl Snapshot {
     pub fn from_config(config: &Config) -> Self {
         let appearance = &config.appearance;
@@ -52,6 +59,7 @@ impl Snapshot {
             title: appearance.title.clone(),
             message: appearance.message.clone(),
             background_color: appearance.background_color.clone(),
+            background_transparency_percent: appearance.background_transparency_percent,
             text_color: appearance.text_color.clone(),
             accent_color: appearance.accent_color.clone(),
             image: appearance.image.as_ref().map(|image| SnapshotImage {
@@ -81,6 +89,7 @@ impl Snapshot {
             || self.title.trim().is_empty()
             || self.message.trim().is_empty()
             || !valid_color(&self.background_color)
+            || self.background_transparency_percent > 100
             || !valid_color(&self.text_color)
             || !valid_color(&self.accent_color)
         {
@@ -250,6 +259,51 @@ mod tests {
         let mut input = Cursor::new(bytes);
         assert_eq!(read_snapshot(&mut input).unwrap(), snapshot);
         read_start(&mut input).unwrap();
+    }
+
+    #[test]
+    fn framed_snapshot_accepts_configured_background_transparency() {
+        for percent in [0, 15, 42, 100] {
+            let mut config = crate::config::Config::default();
+            config.appearance.background_transparency_percent = percent;
+            let snapshot = Snapshot::from_config(&config);
+            assert_eq!(snapshot.background_transparency_percent, percent);
+            let mut bytes = Vec::new();
+            write_snapshot(&mut bytes, &snapshot).unwrap();
+            assert_eq!(read_snapshot(&mut Cursor::new(bytes)).unwrap(), snapshot);
+        }
+    }
+
+    #[test]
+    fn omitted_snapshot_background_transparency_preserves_current_default() {
+        let snapshot = sample();
+        let yaml = serde_saphyr::to_string(&snapshot)
+            .unwrap()
+            .lines()
+            .filter(|line| !line.starts_with("background_transparency_percent:"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut bytes = Vec::from((yaml.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(yaml.as_bytes());
+        let decoded = read_snapshot(&mut Cursor::new(bytes)).unwrap();
+        assert_eq!(decoded.background_transparency_percent, 15);
+        assert_eq!(decoded, snapshot);
+    }
+
+    #[test]
+    fn rejects_invalid_snapshot_background_transparency() {
+        for percent in [101, u32::MAX] {
+            let mut snapshot = sample();
+            snapshot.background_transparency_percent = percent;
+            let mut bytes = Vec::new();
+            assert!(write_snapshot(&mut bytes, &snapshot).is_err());
+            assert!(bytes.is_empty());
+
+            let yaml = serde_saphyr::to_string(&snapshot).unwrap();
+            let mut bytes = Vec::from((yaml.len() as u32).to_be_bytes());
+            bytes.extend_from_slice(yaml.as_bytes());
+            assert!(read_snapshot(&mut Cursor::new(bytes)).is_err());
+        }
     }
 
     #[test]

@@ -174,6 +174,8 @@ fn base_viewport(size: [f32; 2], title: String) -> egui::ViewportBuilder {
         .with_title(title)
         .with_inner_size(size)
         .with_decorations(false)
+        .with_transparent(true)
+        .with_has_shadow(false)
         .with_resizable(false)
         .with_always_on_top()
 }
@@ -332,9 +334,25 @@ impl Overlay {
         context.set_visuals(visuals);
     }
 
+    fn image_slot(ui: &mut egui::Ui, image: Option<&(egui::TextureHandle, Fit)>) {
+        let bounds = egui::vec2(ui.available_width().min(640.0), 280.0);
+        let (rect, _) = ui.allocate_exact_size(bounds, egui::Sense::hover());
+        if let Some((texture, fit)) = image {
+            let (size, uv) = image::geometry(texture.size_vec2(), bounds, *fit);
+            egui::Image::from_texture(texture)
+                .fit_to_exact_size(size)
+                .maintain_aspect_ratio(false)
+                .uv(uv)
+                .corner_radius(12)
+                .paint_at(ui, egui::Rect::from_center_size(rect.center(), size));
+        }
+    }
+
     fn focus_ring(ui: &egui::Ui, response: &egui::Response, accent: Color32) {
-        if response.has_focus() {
-            response.scroll_to_me(None);
+        if response.enabled() && ui.memory(|memory| memory.has_focus(response.id)) {
+            if response.gained_focus() {
+                response.scroll_to_me(None);
+            }
             ui.painter().rect_stroke(
                 response.rect.shrink(1.0),
                 8.0,
@@ -342,6 +360,13 @@ impl Overlay {
                 egui::StrokeKind::Inside,
             );
         }
+    }
+
+    fn background_fill(snapshot: &Snapshot) -> Color32 {
+        let background = Self::color(&snapshot.background_color);
+        let opacity_percent = 100 - snapshot.background_transparency_percent;
+        let alpha = ((opacity_percent * 255 + 50) / 100) as u8;
+        Color32::from_rgba_unmultiplied(background.r(), background.g(), background.b(), alpha)
     }
 
     fn centered_column(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
@@ -360,8 +385,92 @@ impl Overlay {
         );
     }
 
+    fn actions(ui: &mut egui::Ui, snapshot: &Snapshot, enabled: bool) -> Option<Action> {
+        let width = ui.available_width();
+        let background = Self::color(&snapshot.background_color);
+        let foreground = Self::color(&snapshot.text_color);
+        let accent = Self::color(&snapshot.accent_color);
+        let mut choice = None;
+        ui.add_enabled_ui(enabled, |ui| {
+            let skip = ui.add_sized(
+                [width, 48.0],
+                egui::Button::new(
+                    RichText::new("Skip current break")
+                        .size(16.0)
+                        .strong()
+                        .color(foreground),
+                )
+                .fill(background.lerp_to_gamma(accent, 0.16))
+                .stroke(Stroke::new(1.0, accent.gamma_multiply(0.65)))
+                .corner_radius(8),
+            );
+            let focus_id = egui::Id::new(("initial-skip-focus", ui.ctx().viewport_id()));
+            if enabled && !ui.data(|data| data.get_temp::<bool>(focus_id).unwrap_or(false)) {
+                skip.request_focus();
+                ui.data_mut(|data| data.insert_temp(focus_id, true));
+            }
+            Self::focus_ring(ui, &skip, accent);
+            if skip.clicked()
+                || (skip.has_focus()
+                    && ui.input_mut(|input| {
+                        input.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
+                            || input.consume_key(egui::Modifiers::NONE, egui::Key::Space)
+                    }))
+            {
+                choice = Some(Action::Skip);
+            }
+            ui.add_space(20.0);
+            ui.label(
+                RichText::new("OR POSTPONE")
+                    .size(12.0)
+                    .strong()
+                    .color(accent),
+            );
+            ui.add_space(12.0);
+            let columns = if width >= 620.0 {
+                4
+            } else if width >= 420.0 {
+                3
+            } else if width >= 260.0 {
+                2
+            } else {
+                1
+            }
+            .min(snapshot.postpone_minutes.len());
+            let gap = 12.0;
+            let button_width = (width - gap * (columns - 1) as f32) / columns as f32;
+            for (row_index, row) in snapshot.postpone_minutes.chunks(columns).enumerate() {
+                let row_width = button_width * row.len() as f32 + gap * (row.len() - 1) as f32;
+                ui.allocate_ui_with_layout(
+                    egui::vec2(row_width, 44.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.spacing_mut().item_spacing.x = gap;
+                        for (offset, minutes) in row.iter().enumerate() {
+                            let index = row_index * columns + offset;
+                            let button = ui.add_sized(
+                                [button_width, 44.0],
+                                egui::Button::new(
+                                    RichText::new(format!("{minutes} min"))
+                                        .size(16.0)
+                                        .color(foreground),
+                                )
+                                .corner_radius(8),
+                            );
+                            Self::focus_ring(ui, &button, accent);
+                            if button.clicked() {
+                                choice = Some(Action::Postpone(index));
+                            }
+                        }
+                    },
+                );
+                ui.add_space(12.0);
+            }
+        });
+        choice
+    }
+
     fn paint(&self, ui: &mut egui::Ui, now: Instant) -> Option<Action> {
-        let background = Self::color(&self.snapshot.background_color);
         let foreground = Self::color(&self.snapshot.text_color);
         let accent = Self::color(&self.snapshot.accent_color);
         let mut choice = None;
@@ -371,17 +480,16 @@ impl Overlay {
             choice = Some(Action::Skip);
         }
         egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(background))
+            .frame(egui::Frame::NONE.fill(Self::background_fill(&self.snapshot)))
             .show(ui, |ui| {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        ui.add_space(48.0);
+                        ui.add_space(32.0);
                         Self::centered_column(ui, |ui| {
-                            let width = ui.available_width();
                             ui.label(
                                 RichText::new("BREAK REMINDER")
-                                    .size(13.0)
+                                    .size(12.0)
                                     .strong()
                                     .color(accent),
                             );
@@ -397,14 +505,16 @@ impl Overlay {
                                 .unwrap_or(u128::from(self.snapshot.duration_seconds));
                             ui.label(
                                 RichText::new(format!("{:02}:{:02}", seconds / 60, seconds % 60))
-                                    .size(64.0)
+                                    .size(56.0)
                                     .color(accent),
                             );
-                            ui.add_space(16.0);
+                            ui.add_space(24.0);
+                            Self::image_slot(ui, self.image.as_ref());
+                            ui.add_space(24.0);
                             ui.add(
                                 egui::Label::new(
                                     RichText::new(&self.snapshot.title)
-                                        .size(36.0)
+                                        .size(32.0)
                                         .strong()
                                         .color(foreground),
                                 )
@@ -414,85 +524,19 @@ impl Overlay {
                             ui.add(
                                 egui::Label::new(
                                     RichText::new(&self.snapshot.message)
-                                        .size(19.0)
+                                        .size(18.0)
                                         .color(foreground),
                                 )
                                 .wrap(),
                             );
-                            if let Some((texture, fit)) = &self.image {
-                                ui.add_space(28.0);
-                                let bounds = egui::vec2(width.min(560.0), 180.0);
-                                let (size, uv) = image::geometry(texture.size_vec2(), bounds, *fit);
-                                ui.add(
-                                    egui::Image::from_texture(texture)
-                                        .fit_to_exact_size(size)
-                                        .maintain_aspect_ratio(false)
-                                        .uv(uv)
-                                        .corner_radius(8),
-                                );
-                            }
-                            ui.add_space(32.0);
-                            ui.add_enabled_ui(self.deadline.is_some(), |ui| {
-                                let skip = ui.add_sized(
-                                    [width, 48.0],
-                                    egui::Button::new(
-                                        RichText::new("Skip this break")
-                                            .size(16.0)
-                                            .color(foreground),
-                                    )
-                                    .corner_radius(8),
-                                );
-                                Self::focus_ring(ui, &skip, accent);
-                                if skip.clicked() {
-                                    choice = Some(Action::Skip);
-                                }
-                                ui.add_space(20.0);
-                                ui.label(
-                                    RichText::new("OR POSTPONE")
-                                        .size(12.0)
-                                        .strong()
-                                        .color(accent),
-                                );
-                                ui.add_space(12.0);
-                                let columns = if width >= 620.0 {
-                                    4
-                                } else if width >= 420.0 {
-                                    3
-                                } else if width >= 260.0 {
-                                    2
-                                } else {
-                                    1
-                                };
-                                let gap = 10.0;
-                                let button_width =
-                                    (width - gap * (columns - 1) as f32) / columns as f32;
-                                for (row_index, row) in
-                                    self.snapshot.postpone_minutes.chunks(columns).enumerate()
-                                {
-                                    ui.horizontal(|ui| {
-                                        ui.spacing_mut().item_spacing.x = gap;
-                                        for (offset, minutes) in row.iter().enumerate() {
-                                            let index = row_index * columns + offset;
-                                            let button = ui.add_sized(
-                                                [button_width, 44.0],
-                                                egui::Button::new(
-                                                    RichText::new(format!("{minutes} min"))
-                                                        .size(16.0)
-                                                        .color(foreground),
-                                                )
-                                                .corner_radius(8),
-                                            );
-                                            Self::focus_ring(ui, &button, accent);
-                                            if button.clicked() {
-                                                choice = Some(Action::Postpone(index));
-                                            }
-                                        }
-                                    });
-                                    ui.add_space(10.0);
-                                }
-                            });
+                            ui.add_space(28.0);
+                            choice = choice.or(Self::actions(
+                                ui,
+                                &self.snapshot,
+                                self.deadline.is_some(),
+                            ));
                         });
-                        ui.add_space(48.0);
+                        ui.add_space(32.0);
                     });
             });
         choice
@@ -500,6 +544,10 @@ impl Overlay {
 }
 
 impl eframe::App for Overlay {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        Color32::TRANSPARENT.to_normalized_gamma_f32()
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let context = ui.ctx().clone();
         if !self.image_attempted {
@@ -514,7 +562,8 @@ impl eframe::App for Overlay {
                             context.load_texture(
                                 "break-reminder-image",
                                 pixels,
-                                egui::TextureOptions::LINEAR,
+                                egui::TextureOptions::LINEAR
+                                    .with_mipmap_mode(Some(egui::TextureFilter::Linear)),
                             ),
                             configured.fit,
                         ));
@@ -685,6 +734,256 @@ mod tests {
     use eframe::egui::{self, Rect, pos2, vec2};
 
     use super::{Overlay, Readiness, physical_to_logical, readiness};
+    use crate::{
+        config::Config,
+        protocol::{Action, Snapshot},
+    };
+
+    fn action_frame(
+        context: &egui::Context,
+        enabled: bool,
+        events: Vec<egui::Event>,
+    ) -> Option<Action> {
+        let snapshot = Snapshot::from_config(&Config::default());
+        let mut action = None;
+        let output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 600.0))),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                Overlay::centered_column(ui, |ui| {
+                    action = Overlay::actions(ui, &snapshot, enabled);
+                });
+            },
+        );
+        output.drop_without_applying_deltas();
+        action
+    }
+
+    fn press(key: egui::Key) -> Vec<egui::Event> {
+        vec![egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }]
+    }
+
+    #[test]
+    fn skip_is_initially_focused_and_activates_with_enter_or_space() {
+        for key in [egui::Key::Enter, egui::Key::Space] {
+            let context = egui::Context::default();
+            assert_eq!(action_frame(&context, true, press(key)), Some(Action::Skip));
+            let context = egui::Context::default();
+            assert_eq!(action_frame(&context, true, vec![]), None);
+            assert!(context.memory(|memory| memory.focused().is_some()));
+            assert_eq!(action_frame(&context, true, press(key)), Some(Action::Skip));
+        }
+    }
+
+    #[test]
+    fn mouse_movement_and_native_focus_updates_keep_the_selected_action_highlighted() {
+        let context = egui::Context::default();
+        let snapshot = Snapshot::from_config(&Config::default());
+        let accent = Overlay::color(&snapshot.accent_color);
+        action_frame(&context, true, vec![]);
+        let skip_id = context.memory(|memory| memory.focused()).unwrap();
+        let skip_rect = context.read_response(skip_id).unwrap().rect;
+
+        for stage in 0..2 {
+            if stage == 1 {
+                action_frame(&context, true, press(egui::Key::Tab));
+            }
+            let selected_id = context.memory(|memory| memory.focused()).unwrap();
+            if stage == 1 {
+                assert_ne!(selected_id, skip_id);
+            }
+            for (focused, position) in [
+                (true, skip_rect.center()),
+                (
+                    false,
+                    pos2(skip_rect.center().x, skip_rect.bottom() + 100.0),
+                ),
+                (true, pos2(20.0, 20.0)),
+                (false, pos2(40.0, 40.0)),
+                (true, skip_rect.center()),
+            ] {
+                let mut choice = None;
+                let output = context.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 600.0))),
+                        focused,
+                        events: vec![
+                            egui::Event::PointerMoved(position),
+                            egui::Event::WindowFocused(focused),
+                        ],
+                        ..Default::default()
+                    },
+                    |ui| {
+                        Overlay::centered_column(ui, |ui| {
+                            choice = Overlay::actions(ui, &snapshot, true);
+                        });
+                    },
+                );
+                assert_eq!(choice, None);
+                assert_eq!(context.memory(|memory| memory.focused()), Some(selected_id));
+                let selected_rect = context.read_response(selected_id).unwrap().rect.shrink(1.0);
+                assert!(output.shapes.iter().any(|shape| {
+                    matches!(&shape.shape, egui::epaint::Shape::Rect(rect)
+                        if rect.rect == selected_rect && rect.stroke == egui::Stroke::new(2.0, accent))
+                }), "selection ring disappeared with native focused={focused}");
+                output.drop_without_applying_deltas();
+            }
+        }
+        assert_eq!(
+            action_frame(&context, true, press(egui::Key::Enter)),
+            Some(Action::Postpone(0))
+        );
+    }
+
+    #[test]
+    fn background_transparency_changes_alpha_and_preserves_the_default() {
+        let mut snapshot = Snapshot::from_config(&Config::default());
+        assert_eq!(Overlay::background_fill(&snapshot).a(), 217);
+        for (percent, alpha) in [(0, 255), (15, 217), (35, 166), (50, 128), (100, 0)] {
+            snapshot.background_transparency_percent = percent;
+            assert_eq!(
+                Overlay::background_fill(&snapshot).a(),
+                alpha,
+                "transparency={percent}%"
+            );
+        }
+    }
+
+    #[test]
+    fn every_postpone_row_is_centered_at_all_column_counts() {
+        for width in [240.0, 360.0, 480.0, 800.0] {
+            for count in 1..=12 {
+                let context = egui::Context::default();
+                let mut snapshot = Snapshot::from_config(&Config::default());
+                snapshot.postpone_minutes = (1..=count).collect();
+                let mut center = 0.0;
+                let output = context.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(width, 900.0))),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        Overlay::centered_column(ui, |ui| {
+                            center = ui.max_rect().center().x;
+                            Overlay::actions(ui, &snapshot, true);
+                        });
+                    },
+                );
+                let labels: Vec<_> = output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| {
+                        if let egui::epaint::Shape::Text(text) = &shape.shape
+                            && text.galley.text().ends_with(" min")
+                        {
+                            Some(text.pos + text.galley.size() / 2.0)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                assert_eq!(labels.len(), count as usize);
+                for label in &labels {
+                    let row: Vec<_> = labels
+                        .iter()
+                        .filter(|other| (other.y - label.y).abs() < 1.0)
+                        .collect();
+                    let row_center = (row.first().unwrap().x + row.last().unwrap().x) / 2.0;
+                    assert!(
+                        (row_center - center).abs() < 1.0,
+                        "width={width}, choices={count}, row center={row_center}, column center={center}"
+                    );
+                }
+                output.drop_without_applying_deltas();
+            }
+        }
+    }
+
+    #[test]
+    fn image_and_no_image_keep_text_at_the_same_lower_position() {
+        let context = egui::Context::default();
+        let texture = context.load_texture(
+            "test-image",
+            egui::ColorImage::filled([1600, 1200], egui::Color32::WHITE),
+            egui::TextureOptions::LINEAR,
+        );
+        let picture = (texture, crate::protocol::Fit::Contain);
+        let mut positions = Vec::new();
+        for image in [None, Some(&picture)] {
+            let output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 900.0))),
+                    ..Default::default()
+                },
+                |ui| {
+                    Overlay::centered_column(ui, |ui| {
+                        Overlay::image_slot(ui, image);
+                        positions.push(ui.label("Time for a break").rect.top());
+                    });
+                },
+            );
+            output.drop_without_applying_deltas();
+        }
+        assert!(positions[0] >= 280.0);
+        assert_eq!(positions[0], positions[1]);
+    }
+
+    #[test]
+    fn focused_skip_allows_scrolling_back_to_top_on_short_displays() {
+        let context = egui::Context::default();
+        let snapshot = Snapshot::from_config(&Config::default());
+        let mut offset = 0.0;
+        for _ in 0..2 {
+            let output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 600.0))),
+                    ..Default::default()
+                },
+                |ui| {
+                    let scroll = egui::ScrollArea::vertical()
+                        .animated(false)
+                        .vertical_scroll_offset(0.0)
+                        .show(ui, |ui| {
+                            ui.add_space(700.0);
+                            Overlay::centered_column(ui, |ui| {
+                                Overlay::actions(ui, &snapshot, true);
+                            });
+                        });
+                    offset = scroll.state.offset.y;
+                },
+            );
+            output.drop_without_applying_deltas();
+        }
+        assert!(context.memory(|memory| memory.focused().is_some()));
+        assert_eq!(
+            offset, 0.0,
+            "focused Skip must not undo scrolling to the top"
+        );
+    }
+
+    #[test]
+    fn skip_focus_waits_until_start_and_does_not_override_tab_navigation() {
+        let context = egui::Context::default();
+        assert_eq!(action_frame(&context, false, press(egui::Key::Enter)), None);
+        assert!(context.memory(|memory| memory.focused().is_none()));
+        action_frame(&context, true, vec![]);
+        let skip_id = context.memory(|memory| memory.focused()).unwrap();
+        action_frame(&context, true, press(egui::Key::Tab));
+        assert_ne!(context.memory(|memory| memory.focused()), Some(skip_id));
+        assert_eq!(
+            action_frame(&context, true, press(egui::Key::Enter)),
+            Some(Action::Postpone(0))
+        );
+    }
 
     #[test]
     fn readiness_drops_pending_secondaries_only_after_root_is_ready() {

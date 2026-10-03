@@ -16,6 +16,7 @@ pub const MAX_INTERVAL_MINUTES: u32 = 1_440;
 pub const MAX_DURATION_SECONDS: u32 = 3_600;
 pub const MAX_POSTPONE_MINUTES: u32 = 1_440;
 pub const MAX_POSTPONE_CHOICES: usize = 12;
+pub const DEFAULT_BACKGROUND_TRANSPARENCY_PERCENT: u32 = 15;
 
 #[derive(Debug, PartialEq)]
 pub struct Config {
@@ -60,6 +61,7 @@ pub struct Appearance {
     pub title: String,
     pub message: String,
     pub background_color: String,
+    pub background_transparency_percent: u32,
     pub text_color: String,
     pub accent_color: String,
     pub image: Option<Image>,
@@ -71,6 +73,7 @@ impl Default for Appearance {
             title: "Time for a break".into(),
             message: "Step away from your screen and rest your eyes.".into(),
             background_color: "#101827".into(),
+            background_transparency_percent: DEFAULT_BACKGROUND_TRANSPARENCY_PERCENT,
             text_color: "#F8FAFC".into(),
             accent_color: "#69D5B2".into(),
             image: None,
@@ -256,6 +259,13 @@ fn validate(path: &Path, config: &mut RawConfig) -> Result<(), ConfigError> {
             return Err(invalid(path, field, "must be a #RRGGBB color"));
         }
     }
+    if config.appearance.background_transparency_percent > 100 {
+        return Err(invalid(
+            path,
+            "appearance.background_transparency_percent",
+            "must be between 0 and 100",
+        ));
+    }
     if let Some(image) = &mut config.appearance.image {
         if image.path.as_os_str().is_empty() {
             return Err(invalid(path, "appearance.image.path", "must not be empty"));
@@ -404,6 +414,53 @@ mod tests {
             fixture.rejects(&format!("pause_media: {value}\n"), "pause_media");
         }
         fixture.rejects("pause_media: true\npause_media: false\n", "pause_media");
+    }
+
+    #[test]
+    fn accepts_background_transparency_boundaries() {
+        let fixture = Fixture::new();
+        for percent in [0, 15, 42, 100] {
+            fixture.write(format!(
+                "appearance:\n  background_transparency_percent: {percent}\n"
+            ));
+            assert_eq!(
+                load(&fixture.path)
+                    .unwrap()
+                    .appearance
+                    .background_transparency_percent,
+                percent
+            );
+        }
+    }
+
+    #[test]
+    fn omitted_background_transparency_preserves_current_default() {
+        let fixture = Fixture::new();
+        assert_eq!(
+            Config::default().appearance.background_transparency_percent,
+            15
+        );
+        for yaml in ["interval_minutes: 25\n", "appearance:\n  title: Stretch\n"] {
+            fixture.write(yaml);
+            assert_eq!(
+                load(&fixture.path)
+                    .unwrap()
+                    .appearance
+                    .background_transparency_percent,
+                15
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_background_transparency_values() {
+        let fixture = Fixture::new();
+        for value in ["101", "-1", "15.5", "fifteen", "true", "null", "[]"] {
+            fixture.rejects(
+                &format!("appearance:\n  background_transparency_percent: {value}\n"),
+                "background_transparency_percent",
+            );
+        }
     }
 
     #[test]

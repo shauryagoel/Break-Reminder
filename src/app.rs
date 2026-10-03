@@ -1374,7 +1374,7 @@ mod tests {
             "break-reminder-reload-{}-{suffix}.yaml",
             std::process::id()
         ));
-        fs::write(&path, "interval_minutes: 2\npostpone_minutes: [10, 15]\n").unwrap();
+        fs::write(&path, "interval_minutes: 2\npostpone_minutes: [10, 15]\nappearance:\n  background_transparency_percent: 35\n").unwrap();
         let start = Instant::now();
         let config = config::load(&path).unwrap();
         let mut app = AppState::new(config, start);
@@ -1383,8 +1383,9 @@ mod tests {
         assert!(app.reload(&path).is_err());
         assert_eq!(app.timer.deadline(), Some(start + Duration::from_secs(120)));
         assert_eq!(app.config.postpone[1], Duration::from_secs(900));
+        assert_eq!(app.config.appearance.background_transparency_percent, 35);
 
-        fs::write(&path, "interval_minutes: 1\npostpone_minutes: [5, 20]\n").unwrap();
+        fs::write(&path, "interval_minutes: 1\npostpone_minutes: [5, 20]\nappearance:\n  background_transparency_percent: 45\n").unwrap();
         app.reload(&path).unwrap();
         assert_eq!(app.config.interval, Duration::from_secs(60));
         assert_eq!(app.timer.deadline(), Some(start + Duration::from_secs(120)));
@@ -1393,9 +1394,18 @@ mod tests {
         };
         let (sender, receiver) = mpsc::channel();
         app.begin(id, Snapshot::from_config(&app.config), sender);
-        fs::write(&path, "interval_minutes: 3\npostpone_minutes: [2, 7]\n").unwrap();
+        fs::write(&path, "interval_minutes: 3\npostpone_minutes: [2, 7]\nappearance:\n  background_transparency_percent: 70\n").unwrap();
         app.reload(&path).unwrap();
         assert_eq!(app.config.postpone[1], Duration::from_secs(420));
+        assert_eq!(app.config.appearance.background_transparency_percent, 70);
+        assert_eq!(
+            app.active
+                .as_ref()
+                .unwrap()
+                .snapshot
+                .background_transparency_percent,
+            45
+        );
         assert!(app.ready(id, start + Duration::from_secs(122), || {}));
         assert_eq!(receiver.try_recv(), Ok(()));
         assert_eq!(
