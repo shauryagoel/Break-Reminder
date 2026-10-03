@@ -63,6 +63,17 @@ pub fn root_ready(root: &Window, frame: NSRect) -> bool {
     root_window(root).is_ok_and(|window| window.isVisible() && window.frame() == frame)
 }
 
+pub fn focus_root(root: &Window) -> Result<bool, String> {
+    let window = root_window(root)?;
+    let mtm = MainThreadMarker::new().ok_or("window focus requires the main thread")?;
+    if NSApplication::sharedApplication(mtm).isActive() && window.isKeyWindow() {
+        return Ok(true);
+    }
+    root.focus_window();
+    // App activation is asynchronous; let native focus events settle before READY.
+    Ok(false)
+}
+
 pub fn configure_child(title: &str, frame: NSRect) -> Result<(), String> {
     let window = child_window(title)?;
     configure(&window, frame);

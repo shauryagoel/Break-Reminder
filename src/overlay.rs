@@ -250,9 +250,6 @@ struct Overlay {
     root_screen: Screen,
     secondary: Vec<(usize, Screen)>,
     first_frame: Option<u64>,
-    #[cfg(target_os = "macos")]
-    readiness_retry: bool,
-    #[cfg(target_os = "linux")]
     readiness_attempts: u8,
     ready: bool,
     finished: bool,
@@ -276,9 +273,6 @@ impl Overlay {
             root_screen: screens[0],
             secondary: screens.into_iter().enumerate().skip(1).collect(),
             first_frame: None,
-            #[cfg(target_os = "macos")]
-            readiness_retry: false,
-            #[cfg(target_os = "linux")]
             readiness_attempts: 0,
             ready: false,
             finished: false,
@@ -325,10 +319,13 @@ impl Overlay {
         let mut visuals = egui::Visuals::dark();
         visuals.override_text_color = Some(foreground);
         visuals.widgets.inactive.bg_fill = background.lerp_to_gamma(foreground, 0.10);
+        visuals.widgets.inactive.weak_bg_fill = visuals.widgets.inactive.bg_fill;
         visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, foreground.gamma_multiply(0.28));
         visuals.widgets.hovered.bg_fill = background.lerp_to_gamma(accent, 0.22);
+        visuals.widgets.hovered.weak_bg_fill = visuals.widgets.hovered.bg_fill;
         visuals.widgets.hovered.bg_stroke = Stroke::new(1.5, accent);
         visuals.widgets.active.bg_fill = background.lerp_to_gamma(accent, 0.34);
+        visuals.widgets.active.weak_bg_fill = visuals.widgets.active.bg_fill;
         visuals.widgets.active.bg_stroke = Stroke::new(1.5, accent);
         visuals.selection.stroke = Stroke::new(1.5, accent);
         context.set_visuals(visuals);
@@ -392,18 +389,24 @@ impl Overlay {
         let accent = Self::color(&snapshot.accent_color);
         let mut choice = None;
         ui.add_enabled_ui(enabled, |ui| {
-            let skip = ui.add_sized(
-                [width, 48.0],
-                egui::Button::new(
-                    RichText::new("Skip current break")
-                        .size(16.0)
-                        .strong()
-                        .color(foreground),
-                )
-                .fill(background.lerp_to_gamma(accent, 0.16))
-                .stroke(Stroke::new(1.0, accent.gamma_multiply(0.65)))
-                .corner_radius(8),
-            );
+            let skip = ui
+                .scope(|ui| {
+                    let inactive = &mut ui.visuals_mut().widgets.inactive;
+                    inactive.bg_fill = background.lerp_to_gamma(accent, 0.16);
+                    inactive.weak_bg_fill = inactive.bg_fill;
+                    inactive.bg_stroke = Stroke::new(1.0, accent.gamma_multiply(0.65));
+                    ui.add_sized(
+                        [width, 48.0],
+                        egui::Button::new(
+                            RichText::new("Skip current break")
+                                .size(16.0)
+                                .strong()
+                                .color(foreground),
+                        )
+                        .corner_radius(8),
+                    )
+                })
+                .inner;
             let focus_id = egui::Id::new(("initial-skip-focus", ui.ctx().viewport_id()));
             if enabled && !ui.data(|data| data.get_temp::<bool>(focus_id).unwrap_or(false)) {
                 skip.request_focus();
@@ -669,23 +672,24 @@ impl eframe::App for Overlay {
             })
         {
             #[cfg(target_os = "macos")]
-            let root_ready = crate::macos_window::root_ready(&self.root, self.root_screen.frame);
+            let root_ready = crate::macos_window::root_ready(&self.root, self.root_screen.frame)
+                && match crate::macos_window::focus_root(&self.root) {
+                    Ok(focused) => focused,
+                    Err(error) => {
+                        eprintln!("cannot focus reminder root: {error}");
+                        context.send_viewport_cmd_to(
+                            egui::ViewportId::ROOT,
+                            egui::ViewportCommand::Close,
+                        );
+                        return;
+                    }
+                };
             #[cfg(target_os = "linux")]
             let root_ready = root_ready(&self.root, self.root_screen);
-            #[cfg(target_os = "macos")]
-            let exhausted = self.readiness_retry;
-            #[cfg(target_os = "linux")]
             let exhausted = self.readiness_attempts >= 8;
             match readiness(root_ready, !pending.is_empty(), exhausted) {
                 Readiness::Retry => {
-                    #[cfg(target_os = "macos")]
-                    {
-                        self.readiness_retry = true;
-                    }
-                    #[cfg(target_os = "linux")]
-                    {
-                        self.readiness_attempts += 1;
-                    }
+                    self.readiness_attempts += 1;
                     if let Err(error) = place_root(&self.root, self.root_screen) {
                         eprintln!("cannot reposition reminder root: {error}");
                         context.send_viewport_cmd_to(
@@ -694,15 +698,12 @@ impl eframe::App for Overlay {
                         );
                         return;
                     }
-                    #[cfg(target_os = "macos")]
-                    context.request_repaint();
-                    #[cfg(target_os = "linux")]
                     context.request_repaint_after(Duration::from_millis(50));
                     return;
                 }
                 Readiness::DropPending => self.drop_pending(&pending, &context),
                 Readiness::Fail => {
-                    eprintln!("reminder root did not stay at its display bounds");
+                    eprintln!("reminder root did not become ready at its display bounds");
                     context
                         .send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
                     return;
@@ -781,6 +782,62 @@ mod tests {
             assert_eq!(action_frame(&context, true, vec![]), None);
             assert!(context.memory(|memory| memory.focused().is_some()));
             assert_eq!(action_frame(&context, true, press(key)), Some(Action::Skip));
+        }
+    }
+
+    #[test]
+    fn skip_uses_hover_and_pressed_styles_without_changing_keyboard_selection() {
+        let context = egui::Context::default();
+        let snapshot = Snapshot::from_config(&Config::default());
+        Overlay::install_visuals(&context, &snapshot);
+        action_frame(&context, true, vec![]);
+        let skip_id = context.memory(|memory| memory.focused()).unwrap();
+        action_frame(&context, true, press(egui::Key::Tab));
+        let selected_id = context.memory(|memory| memory.focused()).unwrap();
+        assert_ne!(selected_id, skip_id);
+        let skip_rect = context.read_response(skip_id).unwrap().rect;
+
+        for pressed in [false, true] {
+            let mut events = vec![egui::Event::PointerMoved(skip_rect.center())];
+            if pressed {
+                events.push(egui::Event::PointerButton {
+                    pos: skip_rect.center(),
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+            // Button styles use the preceding pass's response.
+            action_frame(&context, true, events);
+            let output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 600.0))),
+                    ..Default::default()
+                },
+                |ui| {
+                    Overlay::centered_column(ui, |ui| {
+                        assert_eq!(Overlay::actions(ui, &snapshot, true), None);
+                    });
+                },
+            );
+            let style = context.global_style();
+            let expected = if pressed {
+                &style.visuals.widgets.active
+            } else {
+                &style.visuals.widgets.hovered
+            };
+            assert!(
+                output.shapes.iter().any(|shape| {
+                    matches!(&shape.shape, egui::epaint::Shape::Rect(rect)
+                    if rect.rect.contains(skip_rect.center()) && rect.fill == expected.weak_bg_fill
+                        && rect.stroke == expected.bg_stroke)
+                }),
+                "Skip did not use the expected style with pressed={pressed}"
+            );
+            if !pressed {
+                assert_eq!(context.memory(|memory| memory.focused()), Some(selected_id));
+            }
+            output.drop_without_applying_deltas();
         }
     }
 
