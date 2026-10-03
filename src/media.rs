@@ -1,4 +1,5 @@
 use std::{
+    io::Read,
     process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
@@ -31,24 +32,25 @@ fn run_command(command: &mut Command, timeout: Duration) -> Result<(), String> {
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| format!("cannot start {program}: {error}"))?;
+    // Drain stderr while waiting; a full pipe would block the helper until the timeout.
+    let mut stderr = child.stderr.take().expect("piped stderr");
+    let stderr = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stderr.read_to_end(&mut bytes);
+        bytes
+    });
     let deadline = Instant::now() + timeout;
     loop {
         match child.try_wait() {
-            Ok(Some(_)) => {
-                let output = child
-                    .wait_with_output()
-                    .map_err(|error| error.to_string())?;
-                let error = String::from_utf8_lossy(&output.stderr);
-                return if output.status.success()
+            Ok(Some(status)) => {
+                let error = stderr.join().unwrap_or_default();
+                let error = String::from_utf8_lossy(&error);
+                return if status.success()
                     || (cfg!(target_os = "linux") && error.trim() == "No players found")
                 {
                     Ok(())
                 } else {
-                    Err(format!(
-                        "{program} exited with {}: {}",
-                        output.status,
-                        error.trim()
-                    ))
+                    Err(format!("{program} exited with {status}: {}", error.trim()))
                 };
             }
             Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(25)),
@@ -87,6 +89,16 @@ mod tests {
             )
             .unwrap_err()
             .contains("cannot start")
+        );
+        let error = run_command(
+            Command::new("/bin/sh")
+                .args(["-c", "head -c 200000 /dev/zero | tr '\\0' x >&2; exit 1"]),
+            Duration::from_secs(5),
+        )
+        .unwrap_err();
+        assert!(
+            !error.contains("timed out"),
+            "large stderr blocked the helper"
         );
         assert!(
             run_command(Command::new("/bin/sleep").arg("1"), Duration::ZERO)

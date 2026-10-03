@@ -75,10 +75,11 @@ fn run() -> Result<(), String> {
         };
         return app::run(&path);
     }
-    config::load(&path).map_err(|error| error.to_string())?;
+    // Resolve first: checking a missing file must fail instead of creating the sample.
     let resolved = path
         .canonicalize()
         .map_err(|error| format!("{}: {error}", path.display()))?;
+    config::load(&path).map_err(|error| error.to_string())?;
     println!("Config valid: {}", resolved.display());
     Ok(())
 }
