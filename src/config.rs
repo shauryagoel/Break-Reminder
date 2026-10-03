@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 const SAMPLE: &str = include_str!("../assets/default-config.yaml");
 
@@ -16,7 +16,6 @@ pub const MAX_INTERVAL_MINUTES: u32 = 1_440;
 pub const MAX_DURATION_SECONDS: u32 = 3_600;
 pub const MAX_POSTPONE_MINUTES: u32 = 1_440;
 pub const MAX_POSTPONE_CHOICES: usize = 12;
-pub const DEFAULT_BACKGROUND_TRANSPARENCY_PERCENT: u32 = 15;
 
 #[derive(Debug, PartialEq)]
 pub struct Config {
@@ -73,7 +72,7 @@ impl Default for Appearance {
             title: "Time for a break".into(),
             message: "Step away from your screen and rest your eyes.".into(),
             background_color: "#101827".into(),
-            background_transparency_percent: DEFAULT_BACKGROUND_TRANSPARENCY_PERCENT,
+            background_transparency_percent: 15,
             text_color: "#F8FAFC".into(),
             accent_color: "#69D5B2".into(),
             image: None,
@@ -89,7 +88,7 @@ pub struct Image {
     pub fit: ImageFit,
 }
 
-#[derive(Debug, Default, Deserialize, PartialEq)]
+#[derive(Debug, Default, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ImageFit {
     #[default]

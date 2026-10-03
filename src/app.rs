@@ -172,19 +172,14 @@ impl AppState {
         let (completion, at, mut result) = match action {
             Ok((Action::Elapsed, at)) => (Completion::Elapsed, at, Ok(())),
             Ok((Action::Skip, at)) => (Completion::Skip, at, Ok(())),
+            // `Action::parse_line` bounds the index by this same snapshot's choices.
             Ok((Action::Postpone(index), at)) => {
-                match active.snapshot.postpone_minutes.get(index) {
-                    Some(minutes) => (
-                        Completion::Postpone(Duration::from_secs(u64::from(*minutes) * 60)),
-                        at,
-                        Ok(()),
-                    ),
-                    None => {
-                        let error = "POSTPONE index is out of range".to_owned();
-                        eprintln!("overlay {id}: {error}");
-                        (Completion::Failed, now, Err(error))
-                    }
-                }
+                let minutes = active.snapshot.postpone_minutes[index];
+                (
+                    Completion::Postpone(Duration::from_secs(u64::from(minutes) * 60)),
+                    at,
+                    Ok(()),
+                )
             }
             Err(error) => {
                 eprintln!("overlay {id}: {error}");
@@ -515,12 +510,11 @@ impl ApplicationHandler<AppEvent> for App {
                     Err(error) => self.report_config_error("Reload failed", &error),
                 },
                 "open" => self.open_config(),
-                id if id.starts_with("increase_") => {
-                    if let Ok(minutes) = id[9..].parse() {
+                id => {
+                    if let Some(Ok(minutes)) = id.strip_prefix("increase_").map(str::parse) {
                         self.state.increase(minutes, Instant::now());
                     }
                 }
-                _ => {}
             },
             AppEvent::Menu(_) => {}
             AppEvent::Ready(id) => {
@@ -1545,41 +1539,6 @@ mod tests {
         );
         assert!(!app.ready(id, start + Duration::from_secs(66), || {}));
         assert_eq!(app.timer.deadline(), Some(start + Duration::from_secs(123)));
-    }
-
-    #[test]
-    fn out_of_range_postpone_reports_failure_and_schedules_a_full_interval() {
-        let config = config::Config {
-            interval: Duration::from_secs(60),
-            ..config::Config::default()
-        };
-        let start = Instant::now();
-        let mut app = AppState::new(config, start);
-        let Some(Tick::LaunchOverlay(id)) = app.timer.tick(start + Duration::from_secs(60)) else {
-            panic!("break was not due");
-        };
-        let (sender, _receiver) = mpsc::channel();
-        app.begin(id, Snapshot::from_config(&app.config), sender);
-        assert!(
-            app.finish(
-                id + 1,
-                Ok((Action::Postpone(99), start + Duration::from_secs(61))),
-                start + Duration::from_secs(62),
-            )
-            .is_none()
-        );
-        assert!(app.active.is_some());
-        let error = app
-            .finish(
-                id,
-                Ok((Action::Postpone(99), start + Duration::from_secs(61))),
-                start + Duration::from_secs(62),
-            )
-            .unwrap()
-            .unwrap_err();
-        assert!(error.contains("POSTPONE index is out of range"));
-        assert!(app.active.is_none());
-        assert_eq!(app.timer.deadline(), Some(start + Duration::from_secs(122)));
     }
 
     #[test]

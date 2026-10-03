@@ -8,7 +8,10 @@ use std::{
 use eframe::egui::{self, Color32, RichText, Stroke};
 use winit::window::Window;
 
-use crate::protocol::{self, Action, Fit, Output, Snapshot};
+use crate::{
+    config::ImageFit,
+    protocol::{self, Action, Output, Snapshot},
+};
 
 mod image;
 
@@ -241,7 +244,7 @@ pub fn run() -> Result<(), String> {
 
 struct Overlay {
     snapshot: Snapshot,
-    image: Option<(egui::TextureHandle, Fit)>,
+    image: Option<(egui::TextureHandle, ImageFit)>,
     image_attempted: bool,
     start: Receiver<Result<(), String>>,
     deadline: Option<Instant>,
@@ -331,7 +334,7 @@ impl Overlay {
         context.set_visuals(visuals);
     }
 
-    fn image_slot(ui: &mut egui::Ui, image: Option<&(egui::TextureHandle, Fit)>) {
+    fn image_slot(ui: &mut egui::Ui, image: Option<&(egui::TextureHandle, ImageFit)>) {
         let bounds = egui::vec2(ui.available_width().min(640.0), 280.0);
         let (rect, _) = ui.allocate_exact_size(bounds, egui::Sense::hover());
         if let Some((texture, fit)) = image {
@@ -973,7 +976,7 @@ mod tests {
             egui::ColorImage::filled([1600, 1200], egui::Color32::WHITE),
             egui::TextureOptions::LINEAR,
         );
-        let picture = (texture, crate::protocol::Fit::Contain);
+        let picture = (texture, crate::config::ImageFit::Contain);
         let mut positions = Vec::new();
         for image in [None, Some(&picture)] {
             let output = context.run_ui(

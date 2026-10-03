@@ -7,7 +7,7 @@ use std::{
 use eframe::egui::{ColorImage, Rect, Vec2, pos2, vec2};
 use image::{ImageFormat, ImageReader, Limits};
 
-use crate::protocol::Fit;
+use crate::config::ImageFit;
 
 const MAX_FILE_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_DIMENSION: u32 = 4096;
@@ -47,15 +47,15 @@ pub(super) fn load(path: &Path, max_texture_side: usize) -> Result<ColorImage, S
     ))
 }
 
-pub(super) fn geometry(source: Vec2, bounds: Vec2, fit: Fit) -> (Vec2, Rect) {
+pub(super) fn geometry(source: Vec2, bounds: Vec2, fit: ImageFit) -> (Vec2, Rect) {
     let scale_x = bounds.x / source.x;
     let scale_y = bounds.y / source.y;
     match fit {
-        Fit::Contain => (
+        ImageFit::Contain => (
             source * scale_x.min(scale_y),
             Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
         ),
-        Fit::Cover => {
+        ImageFit::Cover => {
             let scaled = source * scale_x.max(scale_y);
             let visible = vec2(bounds.x / scaled.x, bounds.y / scaled.y);
             (bounds, Rect::from_center_size(pos2(0.5, 0.5), visible))
@@ -71,7 +71,7 @@ mod tests {
     use image::{DynamicImage, ImageBuffer, ImageFormat, Rgba};
 
     use super::{geometry, load};
-    use crate::protocol::Fit;
+    use crate::config::ImageFit;
 
     fn encoded(format: ImageFormat, width: u32, height: u32) -> Vec<u8> {
         let picture = DynamicImage::ImageRgba8(ImageBuffer::from_pixel(
@@ -132,11 +132,11 @@ mod tests {
 
     #[test]
     fn contain_and_cover_keep_aspect_and_crop_from_center() {
-        let (size, uv) = geometry(vec2(400.0, 200.0), vec2(300.0, 180.0), Fit::Contain);
+        let (size, uv) = geometry(vec2(400.0, 200.0), vec2(300.0, 180.0), ImageFit::Contain);
         assert_eq!(size, vec2(300.0, 150.0));
         assert_eq!(uv, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)));
 
-        let (size, uv) = geometry(vec2(400.0, 200.0), vec2(300.0, 180.0), Fit::Cover);
+        let (size, uv) = geometry(vec2(400.0, 200.0), vec2(300.0, 180.0), ImageFit::Cover);
         assert_eq!(size, vec2(300.0, 180.0));
         assert!((uv.min.x - 1.0 / 12.0).abs() < 0.0001);
         assert!((uv.max.x - 11.0 / 12.0).abs() < 0.0001);

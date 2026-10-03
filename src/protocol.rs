@@ -7,8 +7,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::config::{
-    Config, DEFAULT_BACKGROUND_TRANSPARENCY_PERCENT, ImageFit, MAX_DURATION_SECONDS,
-    MAX_POSTPONE_CHOICES, MAX_POSTPONE_MINUTES, valid_color,
+    Config, ImageFit, MAX_DURATION_SECONDS, MAX_POSTPONE_CHOICES, MAX_POSTPONE_MINUTES, valid_color,
 };
 
 const MAX_SNAPSHOT_BYTES: usize = 256 * 1024;
@@ -21,7 +20,6 @@ pub struct Snapshot {
     pub title: String,
     pub message: String,
     pub background_color: String,
-    #[serde(default = "default_background_transparency_percent")]
     pub background_transparency_percent: u32,
     pub text_color: String,
     pub accent_color: String,
@@ -32,18 +30,7 @@ pub struct Snapshot {
 #[serde(deny_unknown_fields)]
 pub struct SnapshotImage {
     pub path: PathBuf,
-    pub fit: Fit,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Fit {
-    Contain,
-    Cover,
-}
-
-fn default_background_transparency_percent() -> u32 {
-    DEFAULT_BACKGROUND_TRANSPARENCY_PERCENT
+    pub fit: ImageFit,
 }
 
 impl Snapshot {
@@ -64,10 +51,7 @@ impl Snapshot {
             accent_color: appearance.accent_color.clone(),
             image: appearance.image.as_ref().map(|image| SnapshotImage {
                 path: image.path.clone(),
-                fit: match image.fit {
-                    ImageFit::Contain => Fit::Contain,
-                    ImageFit::Cover => Fit::Cover,
-                },
+                fit: image.fit,
             }),
         }
     }
@@ -238,7 +222,8 @@ mod tests {
     use std::{io::Cursor, path::PathBuf};
 
     use super::{
-        Action, Fit, Output, Snapshot, SnapshotImage, read_snapshot, read_start, write_snapshot,
+        Action, ImageFit, Output, Snapshot, SnapshotImage, read_snapshot, read_start,
+        write_snapshot,
     };
 
     fn sample() -> Snapshot {
@@ -251,7 +236,7 @@ mod tests {
         snapshot.message = "Rest your eyes.\nLook outside.".into();
         snapshot.image = Some(SnapshotImage {
             path: PathBuf::from("/tmp/rest.png"),
-            fit: Fit::Cover,
+            fit: ImageFit::Cover,
         });
         let mut bytes = Vec::new();
         write_snapshot(&mut bytes, &snapshot).unwrap();
@@ -272,22 +257,6 @@ mod tests {
             write_snapshot(&mut bytes, &snapshot).unwrap();
             assert_eq!(read_snapshot(&mut Cursor::new(bytes)).unwrap(), snapshot);
         }
-    }
-
-    #[test]
-    fn omitted_snapshot_background_transparency_preserves_current_default() {
-        let snapshot = sample();
-        let yaml = serde_saphyr::to_string(&snapshot)
-            .unwrap()
-            .lines()
-            .filter(|line| !line.starts_with("background_transparency_percent:"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let mut bytes = Vec::from((yaml.len() as u32).to_be_bytes());
-        bytes.extend_from_slice(yaml.as_bytes());
-        let decoded = read_snapshot(&mut Cursor::new(bytes)).unwrap();
-        assert_eq!(decoded.background_transparency_percent, 15);
-        assert_eq!(decoded, snapshot);
     }
 
     #[test]
