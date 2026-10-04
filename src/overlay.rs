@@ -511,7 +511,7 @@ impl Overlay {
                                 .unwrap_or(u128::from(self.snapshot.duration_seconds));
                             ui.label(
                                 RichText::new(format!("{:02}:{:02}", seconds / 60, seconds % 60))
-                                    .size(56.0)
+                                    .size(112.0)
                                     .color(accent),
                             );
                             ui.add_space(24.0);
