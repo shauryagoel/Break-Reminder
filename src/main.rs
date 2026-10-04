@@ -1,5 +1,6 @@
 mod app;
 mod config;
+mod logging;
 #[cfg(target_os = "macos")]
 mod macos_window;
 mod media;
@@ -17,8 +18,9 @@ use std::{
 };
 
 fn main() {
+    logging::initialize();
     if let Err(error) = run() {
-        eprintln!("{error}");
+        log::error!(target: "startup_failed", "{error}");
         process::exit(2);
     }
 }
@@ -70,7 +72,7 @@ fn run() -> Result<(), String> {
         let Some(_instance) = instance_lock(Path::new(&home))
             .map_err(|error| format!("Cannot acquire instance lock: {error}"))?
         else {
-            eprintln!("Break Reminder is already running");
+            log::warn!(target: "already_running", "Break Reminder is already running");
             return Ok(());
         };
         return app::run(&path);

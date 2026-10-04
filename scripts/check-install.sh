@@ -167,12 +167,12 @@ has "$bundle/Contents/Info.plist" '<key>CFBundleIconFile</key><string>app-icon.i
 cmp "$project_dir/assets/app-icon.icns" "$bundle/Contents/Resources/app-icon.icns" || fail 'Mac app icon missing or changed during installation'
 encoded_home=$(printf '%s' "$HOME" | sed 's/\&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g; s/'"'"'/\&apos;/g')
 has "$plist" "$encoded_home/Applications/Break Reminder.app/Contents/MacOS/break-reminder"
-has "$plist" "$encoded_home/Library/Logs/break-reminder.log"
 has "$plist" '<key>RunAtLoad</key>'
 has "$plist" '<true/>'
 has "$plist" '<string>Aqua</string>'
 if grep -F -e KeepAlive "$plist" >/dev/null; then fail 'KeepAlive would relaunch after Quit'; fi
-[ -d "$HOME/Library/Logs" ] || fail 'Mac login error-log directory missing'
+if grep -F -e StandardErrorPath "$plist" >/dev/null; then fail 'LaunchAgent would create an unbounded error log'; fi
+absent "$HOME/Library/Logs"
 settings_preserved
 CHECK_BUILD_MARKER=two
 BREAK_REMINDER_SIGN_IDENTITY='Apple Development: Stub Identity'

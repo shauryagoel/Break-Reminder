@@ -48,10 +48,8 @@ case "$install_os" in
     Darwin)
         application="$HOME/Applications/Break Reminder.app"
         startup="$HOME/Library/LaunchAgents/com.breakreminder.app.plist"
-        log_path="$HOME/Library/Logs/break-reminder.log"
         check_destination "$application"
         check_destination "$startup"
-        check_destination "$log_path"
         [ ! -e "$application" ] || [ -d "$application" ] || fail "Expected app bundle directory: $application"
         ;;
     Linux)

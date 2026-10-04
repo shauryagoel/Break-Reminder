@@ -10,6 +10,7 @@ A small Rust menu-bar app that reminds you to take regular breaks.
 - Keyboard: **Skip** is focused when the countdown starts. Tab / Shift+Tab move between buttons, Enter/Space presses the focused button, Escape skips.
 - Optional: pause playing media when a break starts (`pause_media: true`).
 - Supports macOS and Linux/X11. Wayland and Windows are not supported.
+- Saves errors and warnings even when started from Spotlight, Raycast, or dmenu. Daily logs are kept for 30 days, with a 1 MiB limit per day.
 
 ## Install
 
@@ -62,3 +63,5 @@ A small Rust menu-bar app that reminds you to take regular breaks.
 - [Guide](docs/guide.md): install paths, menu details, media pause permissions, AeroSpace, logs.
 - [Verification status](docs/verification.md): which checks have run and which are still open.
 - Specs: [configuration](SPEC-configuration.md), [timing](SPEC-reminder-timing.md), [reminder window](SPEC-reminder-window.md), [capability map](CAPABILITY-MAP.md).
+
+Logs: `~/Library/Logs/break-reminder/` on macOS, or `${XDG_STATE_HOME:-$HOME/.local/state}/break-reminder/` on Linux. See [log details](docs/guide.md#logs).

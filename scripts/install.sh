@@ -31,13 +31,11 @@ trap 'exit 2' HUP INT TERM
 
 case "$install_os" in
     Darwin)
-        mkdir -p "$(dirname -- "$log_path")"
         cp -R "target/macos/Break Reminder.app" "$staging/Break Reminder.app"
         xml_escape() {
             printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g' -e "s/'/\&apos;/g"
         }
         executable_xml=$(xml_escape "$application/Contents/MacOS/break-reminder")
-        log_xml=$(xml_escape "$log_path")
         cat > "$staging/startup" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -47,7 +45,6 @@ case "$install_os" in
     <key>ProgramArguments</key><array><string>$executable_xml</string></array>
     <key>RunAtLoad</key><true/>
     <key>LimitLoadToSessionType</key><string>Aqua</string>
-    <key>StandardErrorPath</key><string>$log_xml</string>
 </dict>
 </plist>
 PLIST
@@ -61,7 +58,7 @@ PLIST
         fi
         chmod 644 "$staging/startup"
         mv -f -- "$staging/startup" "$startup"
-        printf 'Installed: %s\nStarts at next graphical login. Launch now: open "$HOME/Applications/Break Reminder.app"\nLogin errors: %s\n' "$application" "$log_path"
+        printf 'Installed: %s\nStarts at next graphical login. Launch now: open "$HOME/Applications/Break Reminder.app"\n' "$application"
         ;;
     Linux)
         mkdir -p "$(dirname -- "$launcher")" "$(dirname -- "$icon")"

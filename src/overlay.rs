@@ -288,7 +288,7 @@ impl Overlay {
         }
         self.finished = true;
         if let Err(error) = self.output.terminal(action) {
-            eprintln!("cannot send reminder action: {error}");
+            log::error!(target: "overlay_action", "cannot send reminder action: {error}");
         }
         context.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
     }
@@ -298,7 +298,7 @@ impl Overlay {
             return;
         }
         for index in pending {
-            eprintln!(
+            log::warn!(target: "overlay_display_skipped",
                 "skipping reminder display {index}: window did not stay at its display bounds"
             );
         }
@@ -575,7 +575,7 @@ impl eframe::App for Overlay {
                         ));
                     }
                     Err(error) => {
-                        eprintln!("cannot display {}: {error}", configured.path.display());
+                        log::warn!(target: "overlay_image", "cannot display {}: {error}", configured.path.display());
                     }
                 }
             }
@@ -589,12 +589,12 @@ impl eframe::App for Overlay {
                     );
                 }
                 Ok(Err(error)) => {
-                    eprintln!("invalid overlay control: {error}");
+                    log::error!(target: "overlay_control", "invalid overlay control: {error}");
                     context.send_viewport_cmd(egui::ViewportCommand::Close);
                     return;
                 }
                 Err(TryRecvError::Disconnected) => {
-                    eprintln!("overlay control pipe closed before START");
+                    log::error!(target: "overlay_control", "overlay control pipe closed before START");
                     context.send_viewport_cmd(egui::ViewportCommand::Close);
                     return;
                 }
@@ -632,7 +632,7 @@ impl eframe::App for Overlay {
                 },
             );
             if let Some(error) = child_error {
-                eprintln!("skipping reminder display {index}: {error}");
+                log::warn!(target: "overlay_display_skipped", "skipping reminder display {index}: {error}");
                 failed.push(index);
                 continue;
             }
@@ -640,7 +640,7 @@ impl eframe::App for Overlay {
             let child_ready = match crate::macos_window::show_child(&title, screen.frame) {
                 Ok(visible) => visible,
                 Err(error) => {
-                    eprintln!("skipping reminder display {index}: {error}");
+                    log::warn!(target: "overlay_display_skipped", "skipping reminder display {index}: {error}");
                     failed.push(index);
                     continue;
                 }
@@ -679,7 +679,7 @@ impl eframe::App for Overlay {
                 && match crate::macos_window::focus_root(&self.root) {
                     Ok(focused) => focused,
                     Err(error) => {
-                        eprintln!("cannot focus reminder root: {error}");
+                        log::error!(target: "overlay_focus", "cannot focus reminder root: {error}");
                         context.send_viewport_cmd_to(
                             egui::ViewportId::ROOT,
                             egui::ViewportCommand::Close,
@@ -694,7 +694,7 @@ impl eframe::App for Overlay {
                 Readiness::Retry => {
                     self.readiness_attempts += 1;
                     if let Err(error) = place_root(&self.root, self.root_screen) {
-                        eprintln!("cannot reposition reminder root: {error}");
+                        log::error!(target: "overlay_position", "cannot reposition reminder root: {error}");
                         context.send_viewport_cmd_to(
                             egui::ViewportId::ROOT,
                             egui::ViewportCommand::Close,
@@ -706,7 +706,7 @@ impl eframe::App for Overlay {
                 }
                 Readiness::DropPending => self.drop_pending(&pending, &context),
                 Readiness::Fail => {
-                    eprintln!("reminder root did not become ready at its display bounds");
+                    log::error!(target: "overlay_readiness", "reminder root did not become ready at its display bounds");
                     context
                         .send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
                     return;
@@ -714,7 +714,7 @@ impl eframe::App for Overlay {
                 Readiness::Ready => {}
             }
             if let Err(error) = self.output.ready() {
-                eprintln!("cannot send reminder readiness: {error}");
+                log::error!(target: "overlay_readiness", "cannot send reminder readiness: {error}");
                 context.send_viewport_cmd(egui::ViewportCommand::Close);
                 return;
             }

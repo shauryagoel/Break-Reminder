@@ -20,7 +20,7 @@ The app is installed in `~/Applications/Break Reminder.app` for Spotlight and Ra
 open "$HOME/Applications/Break Reminder.app"
 ```
 
-Login startup uses `~/Library/LaunchAgents/com.breakreminder.app.plist`. Quit leaves the app stopped until you launch it again or log in again. Login-start errors are written to `~/Library/Logs/break-reminder.log`. The installer writes the registration without loading a login job in the current session.
+Login startup uses `~/Library/LaunchAgents/com.breakreminder.app.plist`. Quit leaves the app stopped until you launch it again or log in again. Errors from every launch are written to the app's [rotating logs](#logs). The installer writes the registration without loading a login job in the current session.
 
 ### Linux/X11 install
 
@@ -90,7 +90,7 @@ The tray uses the StatusNotifier protocol; your desktop needs a StatusNotifier w
 - Timer controls are disabled during an active break.
 - **Reload Config** preserves the current countdown and paused state. **Open Config** opens the file in your desktop's default app.
 
-Errors: an invalid startup config uses the sample defaults so reminders continue, and reports an error in the menu and on stderr. An invalid reload leaves the previous settings active and reports the same diagnostics. Configuration errors remain available until a successful reload; temporary break and media-pause errors clear at the next break, restoring any configuration error.
+Errors: an invalid startup config uses the sample defaults so reminders continue, and reports an error in the menu, the [log file](#logs), and on stderr. An invalid reload leaves the previous settings active and reports the same diagnostics. Configuration errors remain available until a successful reload; temporary break and media-pause errors clear at the next break, restoring any configuration error.
 
 ## Settings
 
@@ -128,7 +128,7 @@ During a break, **Skip current break** is highlighted and focused as soon as the
 
 ## Media pause
 
-Set `pause_media: true` to pause supported media once a reminder becomes visible. The default is `false`, including in existing configs without this field. Choose **Reload Config** after editing; the setting applies to future breaks. Media stays paused after the break ends, is skipped, or is postponed. A media-control failure appears in the menu and on stderr while the reminder continues.
+Set `pause_media: true` to pause supported media once a reminder becomes visible. The default is `false`, including in existing configs without this field. Choose **Reload Config** after editing; the setting applies to future breaks. Media stays paused after the break ends, is skipped, or is postponed. A media-control failure appears in the menu, the log file, and on stderr while the reminder continues.
 
 ### Linux
 
@@ -160,10 +160,21 @@ If the menu shows a Chrome error saying that executing JavaScript through AppleS
 
 If Vivaldi reports that executing JavaScript through AppleScript is turned off, enable **Vivaldi Settings → Privacy → Apple Events → Allow JavaScript from Apple Events**. Also ensure Break Reminder can control Vivaldi under **macOS System Settings → Privacy & Security → Automation**. Keep `pause_media: true` in your selected YAML and choose **Reload Config**.
 
-### Logs on macOS
+### Logs
 
-The login-start job saves stderr to `~/Library/Logs/break-reminder.log`. A direct Finder/Spotlight launch can send stderr to `/dev/null`, so it may have no saved log. To capture errors from the installed app, first quit its current instance, then run:
+File logging starts before argument parsing and works with login startup, Finder, Spotlight, Raycast, dmenu, and terminal launches. It captures errors and warnings from the app and reminder subprocesses, including Rust panics and configuration checks. Log paths are independent of the working directory:
+
+- macOS: `~/Library/Logs/break-reminder/`
+- Linux: `${XDG_STATE_HOME:-$HOME/.local/state}/break-reminder/`. Empty or relative `XDG_STATE_HOME` values use the default under HOME; HOME must be absolute.
+
+Files are named `break-reminder-YYYY-MM-DD.log` using the UTC date. Each line is a JSON record with a UTC timestamp, severity, process ID, run ID, entry point (`app`, `overlay`, or `check-config`), event, and message. Errors remain visible on stderr when a terminal is attached; logging leaves stdout available for configuration-check output and the reminder protocol. New log directories and files are private to the user (permissions 700 and 600).
+
+The app retains today's file and the preceding 29 UTC dates. Cleanup runs at startup, hourly while running, and before each write, removing only regular files with exact managed names and valid dates. Old logs left while the app is stopped are removed on its next launch. Each file has a 1 MiB cap, bounding normal retained log storage to about 30 MiB. Entries that would exceed the daily cap are omitted from the file and still written to stderr; file logging resumes on the next UTC day. If the directory cannot be resolved or a file cannot be written, the app reports the problem on stderr and keeps working.
+
+Read recent macOS errors with:
 
 ```sh
-"$HOME/Applications/Break Reminder.app/Contents/MacOS/break-reminder" 2>>"$HOME/Library/Logs/break-reminder.log"
+tail -n 50 "$HOME/Library/Logs/break-reminder/"*.log
 ```
+
+On Linux, replace the directory with `${XDG_STATE_HOME:-$HOME/.local/state}/break-reminder/`. Reinstall after quitting to update an existing installation and its login registration. The old macOS `~/Library/Logs/break-reminder.log` is no longer written by the installer and is preserved for reference; it can be deleted manually.

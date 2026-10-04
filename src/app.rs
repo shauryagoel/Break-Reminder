@@ -182,13 +182,13 @@ impl AppState {
                 )
             }
             Err(error) => {
-                eprintln!("overlay {id}: {error}");
+                log::error!(target: "overlay_failed", "overlay {id}: {error}");
                 (Completion::Failed, now, Err(error))
             }
         };
         if !self.timer.complete(id, completion, at) {
             let error = "outcome arrived before its display deadline".to_owned();
-            eprintln!("overlay {id}: {error}");
+            log::error!(target: "overlay_failed", "overlay {id}: {error}");
             self.timer.complete(id, Completion::Failed, now);
             result = Err(error);
         }
@@ -384,17 +384,17 @@ impl App {
     }
 
     fn report_error(&mut self, prefix: &str, error: &str) {
-        eprintln!("{prefix}: {error}");
+        log::error!(target: "app_error", "{prefix}: {error}");
         self.note.error(menu_error(prefix, error), false);
     }
 
     fn report_break_error(&mut self, prefix: &str, error: &str) {
-        eprintln!("{prefix}: {error}");
+        log::error!(target: "break_error", "{prefix}: {error}");
         self.note.error(menu_error(prefix, error), true);
     }
 
     fn report_config_error(&mut self, prefix: &str, error: &str) {
-        eprintln!("{prefix}: {error}");
+        log::error!(target: "config_error", "{prefix}: {error}");
         self.note.config_error(menu_error(
             prefix,
             config_error_detail(&self.config_path, error),
@@ -855,7 +855,7 @@ fn run_child(
             match child.try_wait() {
                 Ok(Some(status)) => {
                     if !status.success() {
-                        eprintln!("overlay {id} exited with {status}");
+                        log::error!(target: "overlay_exit", "overlay {id} exited with {status}");
                     }
                     observed.exited(status.success());
                     exited_at = Some(Instant::now());
@@ -871,7 +871,7 @@ fn run_child(
             return result;
         }
         if observed.timeout(Instant::now()) {
-            eprintln!(
+            log::error!(target: "overlay_timeout",
                 "overlay {id}: {}",
                 observed
                     .fault
@@ -904,7 +904,7 @@ fn run_child(
                     Ok(event)
                 }
                 None => {
-                    eprintln!("overlay {id}: stdout remained open after process exit");
+                    log::error!(target: "overlay_output", "overlay {id}: stdout remained open after process exit");
                     // ponytail: only a descendant can hold this pipe; its reader thread ends
                     // when that descendant closes stdout. Use cancellable I/O if children fork.
                     observed.abandon_output();
@@ -955,7 +955,7 @@ fn initial_config(path: &Path) -> (Config, Option<String>) {
     match config::load(path) {
         Ok(config) => (config, None),
         Err(error) => {
-            eprintln!("Using default settings: {error}");
+            log::warn!(target: "config_fallback", "Using default settings: {error}");
             (Config::default(), Some(error.to_string()))
         }
     }
