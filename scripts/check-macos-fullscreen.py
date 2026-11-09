@@ -1,4 +1,4 @@
-"""Check overlay visibility and keyboard ownership in a macOS full-screen Space.
+"""Check overlay visibility and preserved app focus in a macOS full-screen Space.
 
 Run cargo build, then python3 scripts/check-macos-fullscreen.py.
 The temporary full-screen test window and overlay close automatically.
@@ -100,8 +100,9 @@ with tempfile.TemporaryDirectory(prefix='break-reminder-fullscreen-') as tempora
         snapshot = b'''duration_seconds: 2
 postpone_minutes: [1, 5, 10]
 title: Full-screen reminder check
-message: Checking countdown, keyboard focus, Skip and Postpone
+message: Checking countdown, preserved keyboard focus, Skip and Postpone
 background_color: '#16202A'
+background_transparency_percent: 15
 text_color: '#FFFFFF'
 accent_color: '#51B682'
 image: null
@@ -109,7 +110,9 @@ image: null
         overlay.stdin.write(struct.pack('>I', len(snapshot)) + snapshot)
         overlay.stdin.flush()
         ready = line(overlay, 8)
-        assert ready == 'READY', 'overlay did not become ready: ' + ready
+        if ready != 'READY':
+            stop(overlay)
+            raise AssertionError('overlay did not become ready: ' + ready + '\n' + overlay.stderr.read().decode())
         assert line(host, 4) == 'REACTIVATED', 'activation race was not exercised'
         state = json.loads(subprocess.check_output([str(fixture), str(host.pid), str(overlay.pid)], timeout=4))
         rows = state['windows']
@@ -124,14 +127,17 @@ image: null
         assert visible[host.pid], 'overlay switched away from the existing full-screen Space'
         assert visible[overlay.pid], 'reminder is absent from the full-screen Space despite READY'
         assert min(row['order'] for row in visible[overlay.pid]) < min(row['order'] for row in visible[host.pid]), 'reminder is behind full-screen window'
-        assert state['frontmost_pid'] == overlay.pid, 'READY was emitted while the background app still owns keyboard input'
+        assert state['frontmost_pid'] == host.pid, 'reminder stole keyboard input from the background app'
         start = time.monotonic()
         overlay.stdin.write(b'START\n')
         overlay.stdin.flush()
+        time.sleep(1.1)
+        state = json.loads(subprocess.check_output([str(fixture), str(host.pid), str(overlay.pid)], timeout=4))
+        assert state['frontmost_pid'] == host.pid, 'reminder stole focus after its first frame'
         assert line(overlay, 5) == 'ELAPSED', 'countdown did not finish'
         assert time.monotonic() - start >= 1.8, 'countdown started before START'
         assert overlay.wait(timeout=3) == 0, 'overlay failed to exit'
-        print('Full-screen visibility, activation-race focus, and countdown check passed')
+        print('Full-screen visibility, preserved app focus, and countdown check passed')
     finally:
         stop(overlay)
         stop(host)
