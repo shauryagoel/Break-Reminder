@@ -11,8 +11,6 @@ pub enum Completion {
     Skip,
     Postpone(Duration),
     Failed,
-    #[cfg(test)]
-    Closed,
 }
 
 enum State {
@@ -151,8 +149,6 @@ impl Timer {
         let delay = match completion {
             Completion::Postpone(delay) => delay,
             Completion::Elapsed | Completion::Skip | Completion::Failed => self.interval,
-            #[cfg(test)]
-            Completion::Closed => self.interval,
         };
         self.state = State::Waiting(now + delay);
         true
@@ -220,7 +216,7 @@ mod tests {
         );
         assert!(timer.complete(1, Completion::Elapsed, start + seconds(100)));
         assert_eq!(timer.deadline(), Some(start + seconds(160)));
-        assert!(!timer.complete(1, Completion::Closed, start + seconds(101)));
+        assert!(!timer.complete(1, Completion::Failed, start + seconds(101)));
         assert_eq!(timer.deadline(), Some(start + seconds(160)));
         assert_eq!(timer.display_remaining(start + seconds(101)), None);
     }
@@ -252,7 +248,7 @@ mod tests {
             (Completion::Elapsed, true, 91),
             (Completion::Skip, true, 65),
             (Completion::Failed, false, 65),
-            (Completion::Closed, true, 65),
+            (Completion::Failed, true, 65),
         ] {
             let mut timer = Timer::new(seconds(60), seconds(30), start);
             assert_eq!(
@@ -287,7 +283,7 @@ mod tests {
         assert!(timer.complete(1, Completion::Postpone(seconds(600)), start + seconds(100)));
         assert_eq!(timer.deadline(), Some(start + seconds(700)));
         assert!(!timer.complete(1, Completion::Elapsed, start + seconds(101)));
-        assert!(!timer.complete(1, Completion::Closed, start + seconds(102)));
+        assert!(!timer.complete(1, Completion::Failed, start + seconds(102)));
         assert_eq!(timer.deadline(), Some(start + seconds(700)));
     }
 
@@ -308,7 +304,7 @@ mod tests {
         };
         assert_ne!(first, second);
         assert!(!timer.visible(first, start + seconds(122)));
-        assert!(!timer.complete(first, Completion::Closed, start + seconds(122)));
+        assert!(!timer.complete(first, Completion::Failed, start + seconds(122)));
         assert_eq!(timer.deadline(), None);
         assert!(timer.visible(second, start + seconds(123)));
         assert!(timer.complete(second, Completion::Skip, start + seconds(124)));
@@ -431,7 +427,7 @@ mod tests {
         assert!(timer.complete(1, Completion::Skip, start + seconds(12)));
         assert_eq!(timer.take_break_now(), Some(Tick::LaunchOverlay(2)));
         assert!(!timer.visible(1, start + seconds(13)));
-        assert!(!timer.complete(1, Completion::Closed, start + seconds(13)));
+        assert!(!timer.complete(1, Completion::Failed, start + seconds(13)));
         assert!(timer.complete(2, Completion::Failed, start + seconds(14)));
         assert_eq!(
             timer.tick(start + seconds(74)),
@@ -446,7 +442,7 @@ mod tests {
             (Completion::Skip, 60, true),
             (Completion::Postpone(seconds(600)), 600, true),
             (Completion::Failed, 60, false),
-            (Completion::Closed, 60, true),
+            (Completion::Failed, 60, true),
         ] {
             let mut timer = Timer::new(seconds(60), seconds(30), start);
             assert!(timer.pause(start + seconds(10)));
@@ -457,7 +453,7 @@ mod tests {
             assert!(timer.complete(1, completion, start + seconds(25)));
             assert!(!timer.is_paused());
             assert_eq!(timer.deadline(), Some(start + seconds(25 + delay)));
-            assert!(!timer.complete(1, Completion::Closed, start + seconds(26)));
+            assert!(!timer.complete(1, Completion::Failed, start + seconds(26)));
             assert_eq!(timer.deadline(), Some(start + seconds(25 + delay)));
         }
     }
@@ -493,7 +489,7 @@ mod tests {
         assert!(timer.complete(1, Completion::Skip, start + seconds(625)));
         assert!(timer.restart(start + seconds(630)));
         assert_eq!(timer.deadline(), Some(start + seconds(750)));
-        assert!(!timer.complete(1, Completion::Closed, start + seconds(631)));
+        assert!(!timer.complete(1, Completion::Failed, start + seconds(631)));
         assert_eq!(
             timer.tick(start + seconds(750)),
             Some(Tick::LaunchOverlay(2))

@@ -379,10 +379,6 @@ impl App {
         }
     }
 
-    fn feedback(&mut self, message: &str) {
-        self.note.feedback(message);
-    }
-
     fn report_error(&mut self, prefix: &str, error: &str) {
         log::error!(target: "app_error", "{prefix}: {error}");
         self.note.error(menu_error(prefix, error), false);
@@ -543,7 +539,7 @@ impl ApplicationHandler<AppEvent> for App {
                 }
             }
             AppEvent::Opened(result) => match result {
-                Ok(()) => self.feedback("Configuration opened"),
+                Ok(()) => self.note.feedback("Configuration opened"),
                 Err(error) => self.report_error("Open failed", &error),
             },
             AppEvent::MediaPaused(result) => {

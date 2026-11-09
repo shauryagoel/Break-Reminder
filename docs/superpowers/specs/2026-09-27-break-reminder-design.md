@@ -4,7 +4,7 @@
 
 Build a lightweight, Rust-focused desktop reminder for one person. It runs in the macOS menu bar or an X11 tray, reads settings from `~/.config/break-reminder/config.yaml`, and displays a timed reminder across every connected monitor. The macOS build is testable on the current machine; X11 is also a first-release target and needs an X11 runtime check before being called verified. Windows and Wayland are outside the first release. [winit does not support always-on-top window levels on Wayland](https://docs.rs/winit/latest/winit/window/enum.WindowLevel.html).
 
-The approved [capability map](../../../CAPABILITY-MAP.md) defines `configuration` → `reminder-timing` → `reminder-window`. Each capability has its own spec, plan, task list, and review gate.
+The approved [capability map](../../../CAPABILITY-MAP.md) defines `configuration` → `reminder-timing` → `reminder-window`. Each capability has its own spec.
 
 ## Approach
 

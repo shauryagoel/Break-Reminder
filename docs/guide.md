@@ -124,7 +124,7 @@ Set `appearance.background_transparency_percent` to an integer from `0` (opaque)
 
 ## Reminder window
 
-During a break, **Skip current break** is highlighted and focused as soon as the countdown starts, so Enter or Space skips immediately. Moving the mouse or hovering another button preserves the selected action's highlight, including during transient native-window focus updates. Tab and Shift+Tab move between controls, Enter or Space activates the focused control, and Escape skips. The countdown also dismisses the reminder when `duration_seconds` elapses.
+During a break, **Skip current break** is highlighted as soon as the countdown starts, but the reminder never takes keyboard focus: typing, including Space, Tab, and app shortcuts, stays with the app underneath. Unmodified Escape, Return, or keypad Enter skips only on a fresh press at least one second after the reminder appears; earlier presses, key repeats, and keys already held when it appears are ignored until released and pressed again. Mouse clicks on Skip and Postpone work as soon as the countdown starts. Moving the mouse or hovering another button preserves the Skip highlight, including during transient native-window focus updates. The countdown also dismisses the reminder when `duration_seconds` elapses.
 
 ## Media pause
 

@@ -55,21 +55,19 @@ fn run() -> Result<(), String> {
         ensure_supported_session()?;
         return overlay::run();
     }
+    let home = || {
+        env::var_os("HOME")
+            .filter(|home| !home.is_empty())
+            .map(PathBuf::from)
+            .ok_or("HOME is not set")
+    };
     let path = match config_path {
         Some(path) => path,
-        None => {
-            let home = env::var_os("HOME")
-                .filter(|home| !home.is_empty())
-                .ok_or("HOME is not set")?;
-            config::default_path(&PathBuf::from(home))
-        }
+        None => config::default_path(&home()?),
     };
     if !check_config {
         ensure_supported_session()?;
-        let home = env::var_os("HOME")
-            .filter(|home| !home.is_empty())
-            .ok_or("HOME is not set")?;
-        let Some(_instance) = instance_lock(Path::new(&home))
+        let Some(_instance) = instance_lock(&home()?)
             .map_err(|error| format!("Cannot acquire instance lock: {error}"))?
         else {
             log::warn!(target: "already_running", "Break Reminder is already running");

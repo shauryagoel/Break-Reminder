@@ -60,12 +60,15 @@ Normal `cargo run` uses `~/.config/break-reminder/config.yaml`. A short-lived te
 ## Project structure
 
 ```text
-src/main.rs            CLI dispatch for check, parent, and private overlay modes
+src/main.rs            CLI dispatch for check, parent, and private overlay modes; instance lock
 src/app.rs             Windowless tray app, config reload, timer events, child lifecycle
+src/protocol.rs        Parent/overlay snapshot framing, START, and action lines
+src/logging.rs         Daily rotating error log files
 src/media.rs           Bounded media commands, called off the parent UI thread
 src/overlay.rs         eframe viewports, rendering, image, and single action latch
 src/overlay/image.rs   Bounded image decode/fallback and contain/cover geometry
-src/macos_window.rs    macOS-only AppKit window frame/level adjustment
+src/overlay/keyboard.rs  Guarded native skip keys (Carbon on macOS, X11 grabs on Linux)
+src/macos_window.rs    macOS-only AppKit window frame/level/focus adjustment
 src/config.rs          Existing validated YAML provider
 src/timing.rs          Existing pure timer provider
 assets/               Sample YAML and status/app icon assets if needed
