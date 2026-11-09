@@ -475,6 +475,7 @@ dependencies = [
  "time",
  "tray-icon",
  "winit",
+ "x11rb",
 ]
 
 [[package]]

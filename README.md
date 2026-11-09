@@ -7,7 +7,7 @@ A small Rust menu-bar app that reminds you to take regular breaks.
 - Waits quietly in the menu bar, then shows a borderless reminder on every connected display.
 - On macOS, the reminder appears above full-screen apps without creating its own Space.
 - Each break has a countdown, a **Skip** button, and configurable **Postpone** buttons.
-- Keyboard: **Skip** is focused when the countdown starts. Tab / Shift+Tab move between buttons, Enter/Space presses the focused button, Escape skips.
+- Keyboard: keep typing in the underlying app, including Space and Tab. **Escape** or **Enter** skips after the popup has been visible for one second; an early or held key does not skip. Mouse Skip and Postpone work as soon as the countdown starts.
 - Optional: pause playing media when a break starts (`pause_media: true`).
 - Supports macOS and Linux/X11. Wayland and Windows are not supported.
 - Saves errors and warnings even when started from Spotlight, Raycast, or dmenu. Daily logs are kept for 30 days, with a 1 MiB limit per day.

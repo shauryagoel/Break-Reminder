@@ -14,6 +14,7 @@ use crate::{
 };
 
 mod image;
+mod keyboard;
 
 #[derive(Clone, Copy)]
 struct Screen {
@@ -173,14 +174,20 @@ fn child_title(index: usize) -> String {
 }
 
 fn base_viewport(size: [f32; 2], title: String) -> egui::ViewportBuilder {
-    egui::ViewportBuilder::default()
+    let viewport = egui::ViewportBuilder::default()
         .with_title(title)
         .with_inner_size(size)
         .with_decorations(false)
         .with_transparent(true)
         .with_has_shadow(false)
         .with_resizable(false)
-        .with_always_on_top()
+        .with_active(false)
+        .with_always_on_top();
+    #[cfg(target_os = "linux")]
+    let viewport = viewport
+        .with_window_type(egui::X11WindowType::Notification)
+        .with_override_redirect(true);
+    viewport
 }
 
 fn viewport(screen: Screen, title: String) -> egui::ViewportBuilder {
@@ -209,6 +216,7 @@ pub fn run() -> Result<(), String> {
         options.event_loop_builder = Some(Box::new(|builder| {
             builder.with_activation_policy(ActivationPolicy::Accessory);
             builder.with_default_menu(false);
+            builder.with_activate_ignoring_other_apps(false);
         }));
     }
     #[cfg(target_os = "linux")]
@@ -227,6 +235,8 @@ pub fn run() -> Result<(), String> {
                 .ok_or_else(|| io::Error::other("overlay root window is unavailable"))?
                 .clone();
             let screens = screens(&root).map_err(io::Error::other)?;
+            let shortcuts =
+                keyboard::Shortcuts::new(creation.egui_ctx.clone()).map_err(io::Error::other)?;
             place_root(&root, screens[0]).map_err(io::Error::other)?;
             let context = creation.egui_ctx.clone();
             Overlay::install_visuals(&context, &snapshot);
@@ -236,13 +246,16 @@ pub fn run() -> Result<(), String> {
                 let _ = sender.send(result);
                 context.request_repaint();
             });
-            Ok(Box::new(Overlay::new(snapshot, receiver, root, screens)))
+            Ok(Box::new(Overlay::new(
+                snapshot, receiver, root, screens, shortcuts,
+            )))
         }),
     )
     .map_err(|error| format!("cannot open reminder: {error}"))
 }
 
 struct Overlay {
+    shortcuts: keyboard::Shortcuts,
     snapshot: Snapshot,
     image: Option<(egui::TextureHandle, ImageFit)>,
     image_attempted: bool,
@@ -264,8 +277,10 @@ impl Overlay {
         start: Receiver<Result<(), String>>,
         root: std::sync::Arc<Window>,
         screens: Vec<Screen>,
+        shortcuts: keyboard::Shortcuts,
     ) -> Self {
         Self {
+            shortcuts,
             snapshot,
             image: None,
             image_attempted: false,
@@ -386,6 +401,11 @@ impl Overlay {
     }
 
     fn actions(ui: &mut egui::Ui, snapshot: &Snapshot, enabled: bool) -> Option<Action> {
+        // Native shortcuts enforce the delay; egui must not activate focused buttons by key.
+        ui.input_mut(|input| {
+            input.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+            input.consume_key(egui::Modifiers::NONE, egui::Key::Space);
+        });
         let width = ui.available_width();
         let background = Self::color(&snapshot.background_color);
         let foreground = Self::color(&snapshot.text_color);
@@ -416,13 +436,7 @@ impl Overlay {
                 ui.data_mut(|data| data.insert_temp(focus_id, true));
             }
             Self::focus_ring(ui, &skip, accent);
-            if skip.clicked()
-                || (skip.has_focus()
-                    && ui.input_mut(|input| {
-                        input.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
-                            || input.consume_key(egui::Modifiers::NONE, egui::Key::Space)
-                    }))
-            {
+            if skip.clicked() {
                 choice = Some(Action::Skip);
             }
             ui.add_space(20.0);
@@ -480,11 +494,6 @@ impl Overlay {
         let foreground = Self::color(&self.snapshot.text_color);
         let accent = Self::color(&self.snapshot.accent_color);
         let mut choice = None;
-        if self.deadline.is_some()
-            && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
-        {
-            choice = Some(Action::Skip);
-        }
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(Self::background_fill(&self.snapshot)))
             .show(ui, |ui| {
@@ -603,7 +612,19 @@ impl eframe::App for Overlay {
         }
 
         let now = Instant::now();
-        let mut choice = self.paint(ui, now);
+        let started = self.deadline.map(|deadline| {
+            deadline - Duration::from_secs(u64::from(self.snapshot.duration_seconds))
+        });
+        let mut choice = match self.shortcuts.poll(started) {
+            Ok(true) => Some(Action::Skip),
+            Ok(false) => None,
+            Err(error) => {
+                log::error!(target: "overlay_keyboard", "{error}");
+                context.send_viewport_cmd(egui::ViewportCommand::Close);
+                return;
+            }
+        };
+        choice = choice.or_else(|| self.paint(ui, now));
         let mut failed = Vec::new();
         let mut pending = Vec::new();
         for (index, screen) in self.secondary.iter().copied() {
@@ -675,20 +696,12 @@ impl eframe::App for Overlay {
             })
         {
             #[cfg(target_os = "macos")]
-            let root_ready = crate::macos_window::root_ready(&self.root, self.root_screen.frame)
-                && match crate::macos_window::focus_root(&self.root) {
-                    Ok(focused) => focused,
-                    Err(error) => {
-                        log::error!(target: "overlay_focus", "cannot focus reminder root: {error}");
-                        context.send_viewport_cmd_to(
-                            egui::ViewportId::ROOT,
-                            egui::ViewportCommand::Close,
-                        );
-                        return;
-                    }
-                };
+            let root_ready = crate::macos_window::root_ready(&self.root, self.root_screen.frame);
             #[cfg(target_os = "linux")]
             let root_ready = root_ready(&self.root, self.root_screen);
+            if root_ready {
+                self.shortcuts.visible(now);
+            }
             let exhausted = self.readiness_attempts >= 8;
             match readiness(root_ready, !pending.is_empty(), exhausted) {
                 Readiness::Retry => {
@@ -777,15 +790,22 @@ mod tests {
     }
 
     #[test]
-    fn skip_is_initially_focused_and_activates_with_enter_or_space() {
+    fn skip_is_highlighted_without_local_keyboard_activation() {
         for key in [egui::Key::Enter, egui::Key::Space] {
             let context = egui::Context::default();
-            assert_eq!(action_frame(&context, true, press(key)), Some(Action::Skip));
+            assert_eq!(action_frame(&context, true, press(key)), None);
             let context = egui::Context::default();
             assert_eq!(action_frame(&context, true, vec![]), None);
             assert!(context.memory(|memory| memory.focused().is_some()));
-            assert_eq!(action_frame(&context, true, press(key)), Some(Action::Skip));
+            assert_eq!(action_frame(&context, true, press(key)), None);
         }
+    }
+
+    #[test]
+    fn space_does_not_skip_a_break() {
+        let context = egui::Context::default();
+        action_frame(&context, true, vec![]);
+        assert_eq!(action_frame(&context, true, press(egui::Key::Space)), None);
     }
 
     #[test]
@@ -898,10 +918,7 @@ mod tests {
                 output.drop_without_applying_deltas();
             }
         }
-        assert_eq!(
-            action_frame(&context, true, press(egui::Key::Enter)),
-            Some(Action::Postpone(0))
-        );
+        assert_eq!(action_frame(&context, true, press(egui::Key::Enter)), None);
     }
 
     #[test]
@@ -1039,10 +1056,7 @@ mod tests {
         let skip_id = context.memory(|memory| memory.focused()).unwrap();
         action_frame(&context, true, press(egui::Key::Tab));
         assert_ne!(context.memory(|memory| memory.focused()), Some(skip_id));
-        assert_eq!(
-            action_frame(&context, true, press(egui::Key::Enter)),
-            Some(Action::Postpone(0))
-        );
+        assert_eq!(action_frame(&context, true, press(egui::Key::Enter)), None);
     }
 
     #[test]
